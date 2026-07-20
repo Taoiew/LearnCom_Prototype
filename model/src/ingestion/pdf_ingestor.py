@@ -77,7 +77,10 @@ class MaterialChunk:
     chunk_type: ChunkType = ChunkType.TEXT
     source_type: SourceType = SourceType.TEXT_LAYER
     image_ids: tuple[str, ...] = ()
-    bounding_box: tuple[float, float, float, float] | None = None
+    source_chunk_ids: tuple[str, ...] = ()
+    bounding_box: (
+        tuple[float, float, float, float] | None
+    ) = None
 
 
 class PDFIngestor:

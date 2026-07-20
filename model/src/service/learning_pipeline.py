@@ -12,7 +12,10 @@ from src.retrieval.in_memory_retriever import (
     InMemoryRetriever,
     RetrievedChunk,
 )
-from src.routing.scope_router import RoutingInput, ScopeRouter
+from src.routing.scope_router import (
+    RoutingInput,
+    ScopeRouter,
+)
 
 
 class AnswerProvider(Protocol):
@@ -25,15 +28,29 @@ class AnswerProvider(Protocol):
         ...
 
 
+class Retriever(Protocol):
+    def search(
+        self,
+        query: str,
+        top_k: int = 3,
+    ) -> list[RetrievedChunk]:
+        ...
+
+
 class LearningCompanionPipeline:
     def __init__(
         self,
-        retriever: InMemoryRetriever,
+        retriever: Retriever,
         scope_router: ScopeRouter,
         material_answer_agent: AnswerProvider,
         external_answer_agent: AnswerProvider | None = None,
         top_k: int = 3,
     ) -> None:
+        if top_k <= 0:
+            raise ValueError(
+                "top_k must be greater than zero"
+            )
+
         self.retriever = retriever
         self.scope_router = scope_router
         self.material_answer_agent = material_answer_agent
@@ -61,7 +78,9 @@ class LearningCompanionPipeline:
             RoutingInput(
                 question=request.question,
                 material_score=material_score,
-                course_relevance_score=course_relevance_score,
+                course_relevance_score=(
+                    course_relevance_score
+                ),
                 unsafe=unsafe,
             )
         )
@@ -70,7 +89,8 @@ class LearningCompanionPipeline:
             return ChatResponse(
                 answer=(
                     "ฉันไม่สามารถช่วยตอบคำถามนี้ได้ "
-                    "แต่สามารถช่วยในหัวข้อการเรียนที่ปลอดภัยได้"
+                    "แต่สามารถช่วยในหัวข้อการเรียน"
+                    "ที่ปลอดภัยได้"
                 ),
                 scope=routing.decision,
                 confidence=1.0,
@@ -80,7 +100,8 @@ class LearningCompanionPipeline:
             return ChatResponse(
                 answer=(
                     "คำถามนี้อยู่นอกขอบเขตของวิชา "
-                    "ลองถามเกี่ยวกับเนื้อหาในคาบเรียนนี้ได้"
+                    "ลองถามเกี่ยวกับเนื้อหา"
+                    "ในคาบเรียนนี้ได้"
                 ),
                 scope=routing.decision,
                 confidence=1.0,
@@ -97,7 +118,8 @@ class LearningCompanionPipeline:
                 return ChatResponse(
                     answer=(
                         "คำถามนี้เกี่ยวข้องกับวิชา แต่ Material "
-                        "ที่มีอยู่ยังไม่เพียงพอสำหรับคำตอบที่เชื่อถือได้"
+                        "ที่มีอยู่ยังไม่เพียงพอสำหรับคำตอบ"
+                        "ที่เชื่อถือได้"
                     ),
                     scope=routing.decision,
                     confidence=0.0,
@@ -113,7 +135,12 @@ class LearningCompanionPipeline:
         )
 
         citations = (
-            self._create_citations(retrieved)
+            self._create_citations(
+                retrieved=retrieved,
+                grounded_chunk_ids=(
+                    draft.grounded_chunk_ids
+                ),
+            )
             if routing.decision == ScopeDecision.IN_MATERIAL
             else []
         )
@@ -130,15 +157,44 @@ class LearningCompanionPipeline:
     @staticmethod
     def _create_citations(
         retrieved: list[RetrievedChunk],
+        grounded_chunk_ids: tuple[str, ...] = (),
     ) -> list[Citation]:
+        grounded_id_set = set(
+            grounded_chunk_ids
+        )
+
+        citation_results = [
+            result
+            for result in retrieved
+            if (
+                not grounded_id_set
+                or result.chunk.chunk_id
+                in grounded_id_set
+            )
+        ]
+
         return [
             Citation(
                 material_id=result.chunk.material_id,
                 material_name=result.chunk.material_name,
                 chunk_id=result.chunk.chunk_id,
+                knowledge_id=(
+                    result.chunk.chunk_id
+                    if (
+                        result.chunk.source_chunk_ids
+                        or result.chunk.image_ids
+                    )
+                    else None
+                ),
+                source_chunk_ids=list(
+                    result.chunk.source_chunk_ids
+                ),
+                asset_ids=list(
+                    result.chunk.image_ids
+                ),
                 page_number=result.chunk.page_number,
                 quote=result.chunk.text[:300],
                 relevance_score=result.score,
             )
-            for result in retrieved
+            for result in citation_results
         ]

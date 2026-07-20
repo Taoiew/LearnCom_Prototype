@@ -20,9 +20,20 @@ class ScopeDecision(str, Enum):
 class Citation(BaseModel):
     material_id: str
     material_name: str
+
     chunk_id: str
+    knowledge_id: Optional[str] = None
+
+    source_chunk_ids: List[str] = Field(
+        default_factory=list
+    )
+    asset_ids: List[str] = Field(
+        default_factory=list
+    )
+
     page_number: Optional[int] = None
     quote: Optional[str] = None
+
     relevance_score: float = Field(ge=0, le=1)
 
 

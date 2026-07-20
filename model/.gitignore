@@ -41,3 +41,5 @@ data/manifests/
 # OS files
 .DS_Store
 Thumbs.db
+# Local prototype runtime data
+data/
