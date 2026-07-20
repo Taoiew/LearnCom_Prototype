@@ -50,6 +50,12 @@ class VisionRequestExporter:
                     "asset_id": request.asset_id,
                     "image_path": request.image_path,
                     "mime_type": request.mime_type,
+                    "image_width_pixels": (
+                        request.image_width_pixels
+                    ),
+                    "image_height_pixels": (
+                        request.image_height_pixels
+                    ),
                     "extracted_text": request.extracted_text,
                     "tasks": [
                         task.value

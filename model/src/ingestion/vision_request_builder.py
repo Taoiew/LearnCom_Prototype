@@ -56,6 +56,8 @@ class VisionRequestBuilder:
                     asset_id=page_asset.asset_id,
                     image_path=page_asset.file_path,
                     mime_type=page_asset.mime_type,
+                    image_width_pixels=page_asset.width_pixels,
+                    image_height_pixels=page_asset.height_pixels,
                     extracted_text=page.extracted_text,
                     prompt_version=self.PROMPT_VERSION,
                 )

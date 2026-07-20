@@ -86,8 +86,11 @@ def test_export_vision_requests(
     assert request["page_number"] == 2
     assert request["asset_id"].startswith("asset-")
     assert request["mime_type"] == "image/png"
+    assert request["image_width_pixels"] is not None
+    assert request["image_width_pixels"] > 0
+    assert request["image_height_pixels"] is not None
+    assert request["image_height_pixels"] > 0
     assert request["prompt_version"] == "vision-v1"
-
     assert request["tasks"] == [
         "describe_visuals",
         "extract_text",

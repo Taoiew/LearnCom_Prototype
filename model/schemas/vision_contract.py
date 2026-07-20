@@ -1,6 +1,11 @@
+import math
 from enum import Enum
+from typing import Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+BoundingBox = tuple[float, float, float, float]
 
 
 class VisionTask(str, Enum):
@@ -20,6 +25,11 @@ class VisualElementType(str, Enum):
     OTHER = "other"
 
 
+class BoundingBoxSpace(str, Enum):
+    PIXELS = "pixels"
+    NORMALIZED = "normalized"
+
+
 class VisionResponseStatus(str, Enum):
     SUCCESS = "success"
     PARTIAL = "partial"
@@ -37,6 +47,15 @@ class VisionRequest(BaseModel):
     image_path: str
     mime_type: str = "image/png"
 
+    image_width_pixels: int | None = Field(
+        default=None,
+        ge=1,
+    )
+    image_height_pixels: int | None = Field(
+        default=None,
+        ge=1,
+    )
+
     extracted_text: str = ""
 
     tasks: list[VisionTask] = Field(
@@ -50,8 +69,70 @@ class VisionRequest(BaseModel):
 
     prompt_version: str = "vision-v1"
 
+    @model_validator(mode="after")
+    def validate_image_dimensions(self) -> Self:
+        width_missing = self.image_width_pixels is None
+        height_missing = self.image_height_pixels is None
 
-class VisualElement(BaseModel):
+        if width_missing != height_missing:
+            raise ValueError(
+                "image_width_pixels and "
+                "image_height_pixels must be supplied together"
+            )
+
+        return self
+
+class GroundedRegion(BaseModel):
+    bounding_box: BoundingBox | None = None
+    bounding_box_space: BoundingBoxSpace = (
+        BoundingBoxSpace.PIXELS
+    )
+
+    @model_validator(mode="after")
+    def validate_bounding_box(self) -> Self:
+        if self.bounding_box is None:
+            return self
+
+        x1, y1, x2, y2 = self.bounding_box
+        coordinates = (x1, y1, x2, y2)
+
+        if not all(
+            math.isfinite(value)
+            for value in coordinates
+        ):
+            raise ValueError(
+                "bounding_box coordinates must be finite"
+            )
+
+        if any(value < 0 for value in coordinates):
+            raise ValueError(
+                "bounding_box coordinates must not be negative"
+            )
+
+        if x1 >= x2:
+            raise ValueError(
+                "bounding_box must satisfy x1 < x2"
+            )
+
+        if y1 >= y2:
+            raise ValueError(
+                "bounding_box must satisfy y1 < y2"
+            )
+
+        if (
+            self.bounding_box_space
+            is BoundingBoxSpace.NORMALIZED
+            and any(value > 1 for value in coordinates)
+        ):
+            raise ValueError(
+                "normalized bounding_box coordinates "
+                "must be between 0 and 1"
+            )
+
+        return self
+
+
+class VisualElement(GroundedRegion):
     element_id: str
     element_type: VisualElementType
 
@@ -59,24 +140,16 @@ class VisualElement(BaseModel):
     description: str
     extracted_text: str = ""
 
-    bounding_box: (
-        tuple[float, float, float, float] | None
-    ) = None
-
     confidence: float = Field(ge=0, le=1)
 
 
-class ExtractedTable(BaseModel):
+class ExtractedTable(GroundedRegion):
     table_id: str
     title: str = ""
 
     headers: list[str] = Field(default_factory=list)
     rows: list[list[str]] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
-
-    bounding_box: (
-        tuple[float, float, float, float] | None
-    ) = None
 
     confidence: float = Field(ge=0, le=1)
 

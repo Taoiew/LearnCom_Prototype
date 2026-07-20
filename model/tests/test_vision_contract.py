@@ -44,3 +44,34 @@ def test_vision_request_rejects_invalid_page_number() -> None:
             asset_id="asset-invalid",
             image_path="page-0000.png",
         )
+
+def test_vision_request_supports_image_dimensions() -> None:
+    request = VisionRequest(
+        request_id="vision-request-dimensions",
+        material_id="material-001",
+        material_name="lesson.pdf",
+        page_number=2,
+        asset_id="asset-001",
+        image_path="page-0002.png",
+        image_width_pixels=1275,
+        image_height_pixels=1650,
+    )
+
+    assert request.image_width_pixels == 1275
+    assert request.image_height_pixels == 1650
+
+
+def test_vision_request_requires_both_dimensions() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="must be supplied together",
+    ):
+        VisionRequest(
+            request_id="vision-request-invalid",
+            material_id="material-001",
+            material_name="lesson.pdf",
+            page_number=2,
+            asset_id="asset-001",
+            image_path="page-0002.png",
+            image_width_pixels=1275,
+        )

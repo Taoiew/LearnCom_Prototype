@@ -8,6 +8,9 @@ from schemas.vision_contract import (
     VisionResponseStatus,
 )
 
+from src.evaluation.grounding_validator import (
+    GroundingValidator,
+)
 
 @dataclass(frozen=True)
 class MultimodalVerificationResult:
@@ -65,14 +68,25 @@ class MultimodalVerifier:
     def __init__(
         self,
         minimum_confidence: float = 0.80,
+        minimum_evidence_confidence: float = 0.70,
     ) -> None:
         if not 0 <= minimum_confidence <= 1:
             raise ValueError(
                 "minimum_confidence must be between 0 and 1"
             )
 
-        self.minimum_confidence = minimum_confidence
+        if not 0 <= minimum_evidence_confidence <= 1:
+            raise ValueError(
+                "minimum_evidence_confidence must be "
+                "between 0 and 1"
+            )
 
+        self.minimum_confidence = minimum_confidence
+        self.grounding_validator = GroundingValidator(
+            minimum_evidence_confidence=(
+                minimum_evidence_confidence
+            )
+        )
     def verify(
         self,
         request: VisionRequest,
@@ -85,6 +99,20 @@ class MultimodalVerifier:
             request=request,
             response=response,
             reasons=rejection_reasons,
+        )
+
+        grounding_result = self.grounding_validator.validate(
+            response=response,
+            image_width_pixels=request.image_width_pixels,
+            image_height_pixels=request.image_height_pixels,
+            source_extracted_text=request.extracted_text,
+        )
+
+        rejection_reasons.extend(
+            grounding_result.rejection_reasons
+        )
+        review_reasons.extend(
+            grounding_result.review_reasons
         )
 
         if response.status is VisionResponseStatus.FAILED:

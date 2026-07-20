@@ -1,33 +1,22 @@
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.evaluation.multimodal_verifier import (
-    MultimodalVerifier,
+from src.agents.multimodal_factory import (
+    multimodal_agent_context,
 )
-from src.agents.multimodal_agent import (
-    DemoMultimodalAgent,
+from src.ingestion.manifest_exporter import (
+    ManifestExporter,
 )
-from src.ingestion.manifest_exporter import ManifestExporter
 from src.ingestion.pdf_ingestor import PDFIngestor
-from src.ingestion.vision_request_builder import (
-    VisionRequestBuilder,
-)
-from src.ingestion.vision_request_exporter import (
-    VisionRequestExporter,
-)
-from src.ingestion.vision_response_exporter import (
-    VisionResponseExporter,
-)
-from src.ingestion.vision_verification_exporter import (
-    VisionVerificationExporter,
-)
-from src.service.multimodal_pipeline import (
-    MultimodalPipeline,
+from src.service.multimodal_ingestion_runner import (
+    MultimodalIngestionRunner,
+    MultimodalRunArtifacts,
 )
 
 
@@ -35,7 +24,8 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Render PDF pages, detect visual content, "
-            "and export multimodal manifests."
+            "run optional multimodal analysis, and export "
+            "versioned ingestion manifests."
         ),
     )
 
@@ -74,20 +64,25 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument(
         "--multimodal-agent",
-        choices=["none", "demo"],
+        choices=[
+            "none",
+            "demo",
+            "external",
+        ],
         default="none",
         help=(
-            "Multimodal agent to run after request export. "
-            "Default: none."
+            "Multimodal agent to run after page rendering. "
+            "External mode reads configuration from "
+            "environment variables."
         ),
     )
 
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_arguments()
-
+def render_material(
+    args: argparse.Namespace,
+):
     ingestor = PDFIngestor(
         render_dpi=args.dpi,
     )
@@ -103,93 +98,26 @@ def main() -> None:
             "PDF rendering produced no page assets"
         )
 
+    return result
+
+
+def create_manifest_directory(
+    result,
+    manifest_root: Path,
+) -> Path:
     rendered_material_dir_name = Path(
         result.assets[0].file_path
     ).parent.name
 
-    material_manifest_dir = (
-        args.manifest_dir
+    return (
+        manifest_root
         / rendered_material_dir_name
     )
 
-    manifest_exporter = ManifestExporter()
 
-    pages_path, assets_path = manifest_exporter.export(
-        result=result,
-        output_dir=material_manifest_dir,
-    )
-
-    vision_requests = VisionRequestBuilder().build(
-        result
-    )
-
-    vision_requests_path = (
-        VisionRequestExporter().export(
-            result=result,
-            requests=vision_requests,
-            output_dir=material_manifest_dir,
-        )
-    )
-
-    vision_responses_path: Path | None = None
-    vision_verifications_path: Path | None = None
-
-    if args.multimodal_agent == "demo":
-        multimodal_pipeline = MultimodalPipeline(
-            agent=DemoMultimodalAgent(),
-        )
-
-        vision_responses = (
-            multimodal_pipeline.process(
-                vision_requests
-            )
-        )
-
-        vision_responses_path = (
-            VisionResponseExporter().export(
-                result=result,
-                responses=vision_responses,
-                output_dir=material_manifest_dir,
-            )
-        )
-
-        verification_batch = (
-            MultimodalVerifier().verify_batch(
-                requests=vision_requests,
-                responses=vision_responses,
-            )
-        )
-
-        vision_verifications_path = (
-            VisionVerificationExporter().export(
-                requests=vision_requests,
-                batch=verification_batch,
-                output_dir=material_manifest_dir,
-            )
-        )
-
-    vision_page_count = len(vision_requests)
-
-    print()
-    print(f"Material ID: {args.material_id}")
-    print(
-        f"Source PDF: {args.pdf_path.resolve()}"
-    )
-    print(f"Total pages: {len(result.pages)}")
-    print(f"Total assets: {len(result.assets)}")
-    print(
-        f"Vision requests: {vision_page_count}"
-    )
-    print(
-        "Text-only pages: "
-        f"{len(result.pages) - vision_page_count}"
-    )
-    print(
-        "Multimodal agent: "
-        f"{args.multimodal_agent}"
-    )
-    print()
-
+def print_page_report(
+    result,
+) -> None:
     for page in result.pages:
         text_status = (
             "text"
@@ -223,41 +151,115 @@ def main() -> None:
             f"asset={asset_id}"
         )
 
+
+def print_artifact_path(
+    label: str,
+    path: Path | None,
+) -> None:
+    if path is None:
+        print(f"{label}: not generated")
+        return
+
+    print(f"{label}: {path.resolve()}")
+
+
+def print_summary(
+    args: argparse.Namespace,
+    result,
+    pages_path: Path,
+    assets_path: Path,
+    artifacts: MultimodalRunArtifacts,
+) -> None:
     print()
+    print(f"Material ID: {args.material_id}")
     print(
-        "Pages manifest: "
-        f"{pages_path.resolve()}"
+        f"Source PDF: {args.pdf_path.resolve()}"
+    )
+    print(f"Total pages: {len(result.pages)}")
+    print(f"Total assets: {len(result.assets)}")
+    print(
+        f"Vision requests: "
+        f"{artifacts.total_requests}"
     )
     print(
-        "Assets manifest: "
-        f"{assets_path.resolve()}"
+        f"Vision responses: "
+        f"{artifacts.total_responses}"
     )
     print(
-        "Vision requests: "
-        f"{vision_requests_path.resolve()}"
+        f"Verified: {artifacts.verified_count}"
+    )
+    print(
+        "Needs review: "
+        f"{artifacts.needs_review_count}"
+    )
+    print(
+        f"Rejected: {artifacts.rejected_count}"
+    )
+    print(
+        "Multimodal agent: "
+        f"{args.multimodal_agent}"
+    )
+    print()
+
+    print_page_report(result)
+
+    print()
+    print_artifact_path(
+        "Pages manifest",
+        pages_path,
+    )
+    print_artifact_path(
+        "Assets manifest",
+        assets_path,
+    )
+    print_artifact_path(
+        "Vision requests",
+        artifacts.requests_path,
+    )
+    print_artifact_path(
+        "Vision responses",
+        artifacts.responses_path,
+    )
+    print_artifact_path(
+        "Vision verifications",
+        artifacts.verifications_path,
     )
 
-    if vision_responses_path is not None:
-        print(
-            "Vision responses: "
-            f"{vision_responses_path.resolve()}"
+
+def main() -> None:
+    args = parse_arguments()
+    result = render_material(args)
+
+    material_manifest_dir = (
+        create_manifest_directory(
+            result=result,
+            manifest_root=args.manifest_dir,
         )
-    else:
-        print(
-            "Vision responses: not generated "
-            "(multimodal agent disabled)"
+    )
+
+    pages_path, assets_path = (
+        ManifestExporter().export(
+            result=result,
+            output_dir=material_manifest_dir,
+        )
+    )
+
+    with multimodal_agent_context(
+        args.multimodal_agent
+    ) as agent:
+        artifacts = MultimodalIngestionRunner().run(
+            result=result,
+            agent=agent,
+            output_dir=material_manifest_dir,
         )
 
-    if vision_verifications_path is not None:
-        print(
-            "Vision verifications: "
-            f"{vision_verifications_path.resolve()}"
-        )
-    else:
-        print(
-            "Vision verifications: not generated "
-            "(multimodal agent disabled)"
-        )
+    print_summary(
+        args=args,
+        result=result,
+        pages_path=pages_path,
+        assets_path=assets_path,
+        artifacts=artifacts,
+    )
 
 
 if __name__ == "__main__":
