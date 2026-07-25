@@ -153,3 +153,57 @@ def test_pipeline_uses_external_agent_for_course_question():
     assert external_agent.was_called is True
     assert response.citations == []
     assert response.confidence == 0.80
+class FakeRequestScopedRetriever:
+    def __init__(self, results):
+        self.results = results
+        self.received_request = None
+
+    def search_for(
+        self,
+        *,
+        request,
+        top_k=3,
+    ):
+        self.received_request = request
+        return self.results
+
+
+def test_pipeline_supports_request_scoped_retriever():
+    from schemas.model_contract import (
+        ChatRequest,
+        LearningPhase,
+    )
+    from src.routing.scope_router import ScopeRouter
+    from src.service.learning_pipeline import (
+        LearningCompanionPipeline,
+    )
+
+    retriever = FakeRequestScopedRetriever([])
+
+    pipeline = LearningCompanionPipeline(
+        retriever=retriever,
+        scope_router=ScopeRouter(
+            material_threshold=0.1,
+            course_threshold=0.6,
+        ),
+        material_answer_agent=None,
+        top_k=3,
+    )
+
+    request = ChatRequest(
+        student_id="student-one",
+        course_id="CS242",
+        class_session_id="week-07",
+        phase=LearningPhase.DURING_CLASS,
+        question="Question",
+        conversation_id="conversation-one",
+    )
+
+    response = pipeline.run(
+        request=request,
+        course_relevance_score=0.0,
+        unsafe=False,
+    )
+
+    assert retriever.received_request == request
+    assert response.scope.value == "unrelated"

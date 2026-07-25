@@ -36,11 +36,20 @@ class Retriever(Protocol):
     ) -> list[RetrievedChunk]:
         ...
 
+class RequestScopedRetriever(Protocol):
+    def search_for(
+        self,
+        *,
+        request: ChatRequest,
+        top_k: int = 3,
+    ) -> list[RetrievedChunk]:
+        ...
+
 
 class LearningCompanionPipeline:
     def __init__(
         self,
-        retriever: Retriever,
+        retriever: Retriever | RequestScopedRetriever,
         scope_router: ScopeRouter,
         material_answer_agent: AnswerProvider,
         external_answer_agent: AnswerProvider | None = None,
@@ -63,9 +72,8 @@ class LearningCompanionPipeline:
         course_relevance_score: float,
         unsafe: bool = False,
     ) -> ChatResponse:
-        retrieved = self.retriever.search(
-            request.question,
-            top_k=self.top_k,
+        retrieved = self._search(
+            request=request,
         )
 
         material_score = (
@@ -152,6 +160,40 @@ class LearningCompanionPipeline:
             learning_signals=draft.learning_signals,
             used_external_agent=used_external_agent,
             confidence=draft.confidence,
+        )
+
+    def _search(
+        self,
+        *,
+        request: ChatRequest,
+    ) -> list[RetrievedChunk]:
+        search_for = getattr(
+            self.retriever,
+            "search_for",
+            None,
+        )
+
+        if callable(search_for):
+            return search_for(
+                request=request,
+                top_k=self.top_k,
+            )
+
+        search = getattr(
+            self.retriever,
+            "search",
+            None,
+        )
+
+        if not callable(search):
+            raise TypeError(
+                "Retriever must implement search() "
+                "or search_for()"
+            )
+
+        return search(
+            request.question,
+            top_k=self.top_k,
         )
 
     @staticmethod
