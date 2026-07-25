@@ -1,4 +1,4 @@
-import os
+﻿import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -14,11 +14,17 @@ from src.agents.llm_client import (
     OpenAICompatibleClient,
 )
 from src.ingestion.pdf_ingestor import MaterialChunk
+from src.retrieval.conversation_knowledge_store import (
+    ConversationKnowledgeStore,
+)
+from src.retrieval.course_knowledge_store import (
+    CourseKnowledgeStore,
+)
 from src.retrieval.in_memory_retriever import (
     InMemoryRetriever,
 )
-from src.retrieval.verified_kb_retriever import (
-    VerifiedKBRetriever,
+from src.retrieval.merged_knowledge_retriever import (
+    MergedKnowledgeRetriever,
 )
 from src.routing.scope_router import ScopeRouter
 from src.service.learning_pipeline import (
@@ -45,6 +51,9 @@ class ModelRuntimeConfig:
     material_threshold: float
     course_threshold: float
     max_context_chars: int
+
+    bootstrap_course_id: str = "course-001"
+    bootstrap_class_session_id: str = "session-001"
 
     @classmethod
     def from_environment(
@@ -134,6 +143,27 @@ class ModelRuntimeConfig:
             minimum=1,
         )
 
+        bootstrap_course_id = env.get(
+            "BOOTSTRAP_COURSE_ID",
+            "course-001",
+        ).strip()
+
+        bootstrap_class_session_id = env.get(
+            "BOOTSTRAP_CLASS_SESSION_ID",
+            "session-001",
+        ).strip()
+
+        if not bootstrap_course_id:
+            raise RuntimeConfigurationError(
+                "BOOTSTRAP_COURSE_ID must not be empty"
+            )
+
+        if not bootstrap_class_session_id:
+            raise RuntimeConfigurationError(
+                "BOOTSTRAP_CLASS_SESSION_ID "
+                "must not be empty"
+            )
+
         if mode == "verified_kb":
             if verified_kb_path is None:
                 raise RuntimeConfigurationError(
@@ -164,6 +194,10 @@ class ModelRuntimeConfig:
             material_threshold=material_threshold,
             course_threshold=course_threshold,
             max_context_chars=max_context_chars,
+            bootstrap_course_id=bootstrap_course_id,
+            bootstrap_class_session_id=(
+                bootstrap_class_session_id
+            ),
         )
 
     @staticmethod
@@ -282,6 +316,10 @@ class DemoAnswerAgent:
 def build_pipeline(
     config: ModelRuntimeConfig,
     llm_client: JSONChatClient | None = None,
+    course_store: CourseKnowledgeStore | None = None,
+    conversation_store: (
+        ConversationKnowledgeStore | None
+    ) = None,
 ) -> LearningCompanionPipeline:
     scope_router = ScopeRouter(
         material_threshold=config.material_threshold,
@@ -316,8 +354,31 @@ def build_pipeline(
             "verified_kb_path is required"
         )
 
-    retriever = VerifiedKBRetriever.from_file(
-        config.verified_kb_path
+    resolved_course_store = (
+        course_store
+        if course_store is not None
+        else CourseKnowledgeStore()
+    )
+
+    resolved_conversation_store = (
+        conversation_store
+        if conversation_store is not None
+        else ConversationKnowledgeStore()
+    )
+
+    resolved_course_store.activate(
+        course_id=config.bootstrap_course_id,
+        class_session_id=(
+            config.bootstrap_class_session_id
+        ),
+        verified_kb_path=config.verified_kb_path,
+    )
+
+    retriever = MergedKnowledgeRetriever(
+        course_store=resolved_course_store,
+        conversation_store=(
+            resolved_conversation_store
+        ),
     )
 
     resolved_client = llm_client
@@ -352,6 +413,10 @@ def build_pipeline(
 def build_pipeline_from_environment(
     environment: Mapping[str, str] | None = None,
     llm_client: JSONChatClient | None = None,
+    course_store: CourseKnowledgeStore | None = None,
+    conversation_store: (
+        ConversationKnowledgeStore | None
+    ) = None,
 ) -> LearningCompanionPipeline:
     config = ModelRuntimeConfig.from_environment(
         environment
@@ -360,4 +425,6 @@ def build_pipeline_from_environment(
     return build_pipeline(
         config=config,
         llm_client=llm_client,
+        course_store=course_store,
+        conversation_store=conversation_store,
     )

@@ -1,19 +1,28 @@
-import os
 import json
+import os
+import uuid
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import (
     FastAPI,
     File,
+    Form,
     HTTPException,
     UploadFile,
     status,
 )
 from pydantic import BaseModel, Field
 
+from schemas.chat_attachment_contract import (
+    AttachmentProcessingStatus,
+    ChatAttachmentProcessResponse,
+    ChatAttachmentStatusResponse,
+    ChatAttachmentUploadResponse,
+)
 from schemas.material_contract import (
     MaterialStatusResponse,
     MaterialUploadResponse,
@@ -31,6 +40,9 @@ from src.ingestion.material_storage import (
     MaterialStorage,
     MaterialStorageError,
 )
+from src.service.conversation_attachment_service import (
+    ConversationAttachmentService,
+)
 from src.service.material_processing_service import (
     MaterialProcessingError,
     MaterialProcessingProviderError,
@@ -44,9 +56,129 @@ class ChatAPIRequest(BaseModel):
     unsafe: bool = False
 
 
+class RubricCreateRequest(BaseModel):
+    course_id: str = Field(min_length=1)
+    class_session_id: str = Field(min_length=1)
+    rubric_name: str = Field(default="rubric")
+    criteria: list[str] = Field(default_factory=list)
+
+
+class RubricUploadRequest(BaseModel):
+    course_id: str = Field(min_length=1)
+    class_session_id: str = Field(min_length=1)
+    rubric_name: str = Field(default="rubric")
+    criteria: list[str] = Field(default_factory=list)
+
+
+class RubricResponse(BaseModel):
+    rubric_id: str
+    course_id: str
+    class_session_id: str
+    rubric_name: str
+    criteria: list[str] = Field(default_factory=list)
+
+
+class RubricEvaluationRequest(BaseModel):
+    score: float = Field(ge=0, le=1)
+    notes: str | None = None
+
+
+class RubricEvaluationResponse(BaseModel):
+    rubric_id: str
+    score: float
+    notes: str | None = None
+    status: str = "evaluated"
+
+
+class SessionReportCreateRequest(BaseModel):
+    title: str = Field(default="session-report")
+    summary: str = Field(default="")
+
+
+class SessionReportResponse(BaseModel):
+    report_id: str
+    course_id: str
+    class_session_id: str
+    title: str
+    summary: str
+    generated_at: str
+
+
+class InMemoryRubricService:
+    def __init__(self) -> None:
+        self._rubrics: dict[str, dict[str, Any]] = {}
+
+    def create(
+        self,
+        *,
+        course_id: str,
+        class_session_id: str,
+        rubric_name: str,
+        criteria: list[str],
+    ) -> RubricResponse:
+        rubric_id = f"rubric-{uuid.uuid4().hex[:8]}"
+        payload = {
+            "rubric_id": rubric_id,
+            "course_id": course_id,
+            "class_session_id": class_session_id,
+            "rubric_name": rubric_name,
+            "criteria": list(criteria),
+        }
+        self._rubrics[rubric_id] = payload
+        return RubricResponse(**payload)
+
+    def list(self, *, course_id: str, class_session_id: str) -> list[RubricResponse]:
+        return [
+            RubricResponse(**payload)
+            for payload in self._rubrics.values()
+            if payload["course_id"] == course_id and payload["class_session_id"] == class_session_id
+        ]
+
+    def evaluate(self, *, rubric_id: str, score: float, notes: str | None) -> RubricEvaluationResponse:
+        payload = self._rubrics.get(rubric_id)
+        if payload is None:
+            raise KeyError(f"Rubric not found: {rubric_id}")
+        return RubricEvaluationResponse(rubric_id=rubric_id, score=score, notes=notes)
+
+
+class InMemorySessionReportService:
+    def __init__(self) -> None:
+        self._reports: dict[str, dict[str, Any]] = {}
+
+    def generate(
+        self,
+        *,
+        course_id: str,
+        class_session_id: str,
+        title: str,
+        summary: str,
+    ) -> SessionReportResponse:
+        report_id = f"report-{uuid.uuid4().hex[:8]}"
+        payload = {
+            "report_id": report_id,
+            "course_id": course_id,
+            "class_session_id": class_session_id,
+            "title": title,
+            "summary": summary,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._reports[report_id] = payload
+        return SessionReportResponse(**payload)
+
+    def list(self, *, course_id: str, class_session_id: str) -> list[SessionReportResponse]:
+        return [
+            SessionReportResponse(**payload)
+            for payload in self._reports.values()
+            if payload["course_id"] == course_id and payload["class_session_id"] == class_session_id
+        ]
+
+
 def create_app(
     pipeline: Any,
     material_storage: MaterialStorage | None = None,
+    conversation_attachment_service: (
+        ConversationAttachmentService | None
+    ) = None,
     material_processing_service: (
         MaterialProcessingService | None
     ) = None,
@@ -66,6 +198,8 @@ def create_app(
         ]
         | None
     ) = None,
+    rubric_service: InMemoryRubricService | None = None,
+    session_report_service: InMemorySessionReportService | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Learning Companion Model API",
@@ -107,6 +241,12 @@ def create_app(
         or multimodal_agent_context
     )
 
+    attachment_service = (
+        conversation_attachment_service
+    )
+    rubric_service_impl = rubric_service or InMemoryRubricService()
+    session_report_service_impl = session_report_service or InMemorySessionReportService()
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {
@@ -126,6 +266,260 @@ def create_app(
             ),
             unsafe=payload.unsafe,
         )
+
+    @app.post(
+        "/v1/chat/with-attachment",
+        response_model=dict,
+    )
+    async def chat_with_attachment(
+        request_json: str = Form(""),
+        course_relevance_score: float = Form(0.0),
+        unsafe: bool = Form(False),
+        file: UploadFile = File(...),
+    ) -> dict[str, Any]:
+        if attachment_service is None:
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "Conversation attachment service "
+                    "is not configured"
+                ),
+            )
+
+        try:
+            request = ChatRequest.model_validate_json(
+                request_json
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "request_json must be a valid "
+                    "ChatRequest"
+                ),
+            ) from exc
+
+        if not request.conversation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "conversation_id is required "
+                    "for chat attachments"
+                ),
+            )
+
+        try:
+            content = await file.read()
+
+            attachment = (
+                attachment_service.upload_attachment(
+                    student_id=request.student_id,
+                    conversation_id=(
+                        request.conversation_id
+                    ),
+                    course_id=request.course_id,
+                    class_session_id=(
+                        request.class_session_id
+                    ),
+                    filename=(
+                        file.filename
+                        or "attachment"
+                    ),
+                    content_type=(
+                        file.content_type
+                        or "application/octet-stream"
+                    ),
+                    content=content,
+                )
+            )
+
+            processed = (
+                attachment_service.process_attachment(
+                    attachment_id=(
+                        attachment.attachment_id
+                    ),
+                )
+            )
+
+            chat_response = pipeline.run(
+                request=request,
+                course_relevance_score=(
+                    course_relevance_score
+                ),
+                unsafe=unsafe,
+            )
+
+            return {
+                "attachment": processed.model_dump(
+                    mode="json"
+                ),
+                "chat": chat_response.model_dump(
+                    mode="json"
+                ),
+            }
+
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
+
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=str(exc),
+            ) from exc
+
+        finally:
+            await file.close()
+
+    @app.post(
+        "/v1/chat/attachments",
+        response_model=ChatAttachmentUploadResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def upload_chat_attachment_via_json(
+        student_id: str = Form(""),
+        conversation_id: str = Form(""),
+        course_id: str = Form(""),
+        class_session_id: str = Form(""),
+        file: UploadFile = File(...),
+    ) -> ChatAttachmentUploadResponse:
+        if attachment_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Conversation attachment service is not configured",
+            )
+
+        try:
+            content = await file.read()
+            return attachment_service.upload_attachment(
+                student_id=student_id,
+                conversation_id=conversation_id,
+                course_id=course_id,
+                class_session_id=class_session_id,
+                filename=file.filename or "attachment",
+                content_type=file.content_type or "application/octet-stream",
+                content=content,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        finally:
+            await file.close()
+
+    @app.post(
+        "/v1/chat/attachments/{attachment_id}/process",
+        response_model=ChatAttachmentProcessResponse,
+    )
+    def process_chat_attachment_route(attachment_id: str) -> ChatAttachmentProcessResponse:
+        if attachment_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Conversation attachment service is not configured",
+            )
+
+        try:
+            return attachment_service.process_attachment(attachment_id=attachment_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.get(
+        "/v1/chat/attachments/{attachment_id}/status",
+        response_model=ChatAttachmentStatusResponse,
+    )
+    def chat_attachment_status_route(attachment_id: str) -> ChatAttachmentStatusResponse:
+        if attachment_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Conversation attachment service is not configured",
+            )
+
+        try:
+            return attachment_service.get_status(attachment_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    @app.delete(
+        "/v1/chat/attachments/{attachment_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def delete_chat_attachment_route(attachment_id: str) -> None:
+        if attachment_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Conversation attachment service is not configured",
+            )
+
+        if not attachment_service.remove_attachment(attachment_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Attachment not found: {attachment_id}")
+
+    @app.delete(
+        "/v1/chat/conversations/{student_id}/{conversation_id}/attachments",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def clear_chat_conversation_attachments_route(student_id: str, conversation_id: str) -> None:
+        if attachment_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Conversation attachment service is not configured",
+            )
+
+        attachment_service.clear_conversation(student_id=student_id, conversation_id=conversation_id)
+
+    @app.post("/v1/rubrics", response_model=RubricResponse)
+    def create_rubric(payload: RubricCreateRequest) -> RubricResponse:
+        return rubric_service_impl.create(
+            course_id=payload.course_id,
+            class_session_id=payload.class_session_id,
+            rubric_name=payload.rubric_name,
+            criteria=payload.criteria,
+        )
+
+    @app.post("/v1/rubrics/upload", response_model=RubricResponse)
+    def upload_rubric(payload: RubricUploadRequest) -> RubricResponse:
+        return rubric_service_impl.create(
+            course_id=payload.course_id,
+            class_session_id=payload.class_session_id,
+            rubric_name=payload.rubric_name,
+            criteria=payload.criteria,
+        )
+
+    @app.get("/v1/rubrics/{course_id}/{class_session_id}", response_model=list[RubricResponse])
+    def get_rubrics(course_id: str, class_session_id: str) -> list[RubricResponse]:
+        return rubric_service_impl.list(course_id=course_id, class_session_id=class_session_id)
+
+    @app.post("/v1/rubrics/{rubric_id}/evaluate", response_model=RubricEvaluationResponse)
+    def evaluate_rubric(rubric_id: str, payload: RubricEvaluationRequest) -> RubricEvaluationResponse:
+        return rubric_service_impl.evaluate(rubric_id=rubric_id, score=payload.score, notes=payload.notes)
+
+    @app.post(
+        "/v1/session-reports/{course_id}/{class_session_id}/generate",
+        response_model=SessionReportResponse,
+    )
+    def generate_session_report(course_id: str, class_session_id: str, payload: SessionReportCreateRequest) -> SessionReportResponse:
+        return session_report_service_impl.generate(
+            course_id=course_id,
+            class_session_id=class_session_id,
+            title=payload.title,
+            summary=payload.summary,
+        )
+
+    @app.get("/v1/session-reports/{course_id}/{class_session_id}", response_model=list[SessionReportResponse])
+    def list_session_reports(course_id: str, class_session_id: str) -> list[SessionReportResponse]:
+        return session_report_service_impl.list(course_id=course_id, class_session_id=class_session_id)
 
     @app.post(
         "/v1/materials/upload",
