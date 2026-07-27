@@ -1,1 +1,1 @@
-# Learning-Companion
+# LearnCom_Prototype
