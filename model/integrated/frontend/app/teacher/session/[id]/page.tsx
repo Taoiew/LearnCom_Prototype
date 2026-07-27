@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
   Camera,
+  CalendarPlus,
   ChevronLeft,
   ClipboardCheck,
   Image as ImageIcon,
@@ -14,8 +15,16 @@ import {
 } from "lucide-react";
 import TeacherSidebar from "@/components/teachersidebar";
 import {
+  analyzeNextClassPreview,
+  createNextClassPreview,
+  createRevisionNote,
+  getTeacherDashboardViewModel,
   getTeacherSessionSummary,
+  publishNextClassPreview,
+  publishRevisionNote,
+  type NextClassPreview,
   type TeacherAnswerReference,
+  type TeacherSession,
   type TeacherSessionSummary,
 } from "@/lib/api";
 
@@ -75,6 +84,15 @@ export default function TeacherSessionPage() {
   const sessionId = String(params?.id ?? "");
   const [summary, setSummary] = useState<TeacherSessionSummary | null>(null);
   const [loadError, setLoadError] = useState("");
+  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
+  const [teacherSessions, setTeacherSessions] = useState<TeacherSession[]>([]);
+  const [nextSessionId, setNextSessionId] = useState("");
+  const [previewTitle, setPreviewTitle] = useState("");
+  const [previewContent, setPreviewContent] = useState("");
+  const [previewActionError, setPreviewActionError] = useState("");
+  const [isPreviewSaving, setIsPreviewSaving] = useState(false);
+  const [revisionTopic, setRevisionTopic] = useState("");
+  const [revisionText, setRevisionText] = useState("");
 
   useEffect(() => {
     let ignore = false;
@@ -98,6 +116,104 @@ export default function TeacherSessionPage() {
       ignore = true;
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    let ignore = false;
+
+    getTeacherDashboardViewModel()
+      .then((viewModel) => {
+        if (ignore) return;
+        setTeacherSessions(Object.values(viewModel.sessionsBySubject).flat());
+      })
+      .catch(() => {
+        if (!ignore) setTeacherSessions([]);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  const refreshSummary = async () => {
+    const nextSummary = await getTeacherSessionSummary(sessionId);
+    setSummary(nextSummary);
+  };
+
+  const handleCreatePreview = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!nextSessionId || !previewTitle.trim()) {
+      setPreviewActionError("Choose the next session and add a preview title.");
+      return;
+    }
+
+    setIsPreviewSaving(true);
+    setPreviewActionError("");
+    try {
+      await createNextClassPreview({
+        currentSessionId: sessionId,
+        nextSessionId,
+        title: previewTitle,
+        previewContent,
+      });
+      await refreshSummary();
+      setIsPreviewModalOpen(false);
+      setNextSessionId("");
+      setPreviewTitle("");
+      setPreviewContent("");
+    } catch (error) {
+      setPreviewActionError(
+        error instanceof Error ? error.message : "Could not create preview.",
+      );
+    } finally {
+      setIsPreviewSaving(false);
+    }
+  };
+
+  const handlePublishPreview = async (previewId: string) => {
+    try {
+      await publishNextClassPreview(previewId);
+      await refreshSummary();
+    } catch (error) {
+      setPreviewActionError(
+        error instanceof Error ? error.message : "Could not publish preview.",
+      );
+    }
+  };
+
+  const handleAnalyzePreview = async (previewId: string) => {
+    try {
+      await analyzeNextClassPreview(previewId);
+      await refreshSummary();
+    } catch (error) {
+      setPreviewActionError(
+        error instanceof Error ? error.message : "Could not analyze preview.",
+      );
+    }
+  };
+
+  const handleCreateRevision = async (preview: NextClassPreview) => {
+    if (!preview.summary?.id || !revisionTopic.trim() || !revisionText.trim()) {
+      setPreviewActionError("Add a topic and revision note first.");
+      return;
+    }
+
+    try {
+      const note = await createRevisionNote({
+        summaryId: preview.summary.id,
+        topic: revisionTopic,
+        explanation: revisionText,
+        priority: "medium",
+      });
+      await publishRevisionNote(note.id);
+      setRevisionTopic("");
+      setRevisionText("");
+      await refreshSummary();
+    } catch (error) {
+      setPreviewActionError(
+        error instanceof Error ? error.message : "Could not save revision note.",
+      );
+    }
+  };
 
   const stats = summary
     ? [
@@ -158,12 +274,13 @@ export default function TeacherSessionPage() {
     criteriaBreakdown: [],
     recentAttempts: [],
   };
+  const nextClassReadiness = summary?.nextClassReadiness ?? [];
 
   return (
     <div className="flex min-h-screen bg-[#fdfbf7] text-stone-900 font-sans">
       <TeacherSidebar />
       <main
-        className="flex-1 pl-64 px-8 pt-12 pb-10 relative overflow-hidden"
+        className="flex-1 pl-64 px-8 pt-12 pb-10 relative overflow-y-auto"
         style={{
           background:
             "radial-gradient(ellipse 1600px 600px at 70% 0%, #ffd4a8 0%, #ffdfb8 20%, #ffe9cc 40%, #fff2e0 60%, #ffebd6 100%)",
@@ -318,7 +435,7 @@ export default function TeacherSessionPage() {
                     <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-stone-400">
                       Criteria needing attention
                     </p>
-                    <div className="mt-3 space-y-2">
+                    <div className="mt-3 max-h-[220px] space-y-2 overflow-y-auto pr-1">
                       {quizOverview.criteriaBreakdown.length > 0 ? (
                         quizOverview.criteriaBreakdown.map((criterion) => (
                           <div
@@ -344,7 +461,7 @@ export default function TeacherSessionPage() {
 
                 {quizOverview.recentAttempts.length > 0 && (
                   <div className="mt-4 overflow-hidden rounded-xl border border-stone-100">
-                    <div className="overflow-x-auto">
+                    <div className="max-h-[260px] overflow-auto">
                       <table className="w-full min-w-[680px] border-collapse bg-white text-left text-xs">
                         <thead className="bg-stone-50 text-[10px] uppercase tracking-[0.16em] text-stone-400">
                           <tr>
@@ -385,6 +502,203 @@ export default function TeacherSessionPage() {
               </section>
 
               <section className="rounded-2xl border border-stone-200/80 bg-white/95 p-5 shadow-sm">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-stone-900">
+                      Next-class readiness loop
+                    </h3>
+                    <p className="text-xs text-stone-500">
+                      Preview the next class, collect quick readiness answers, and publish revision notes.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewActionError("");
+                      setIsPreviewModalOpen(true);
+                    }}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-[#e65100] px-4 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-[#d84315]"
+                  >
+                    <CalendarPlus size={15} />
+                    Prepare next class
+                  </button>
+                </div>
+
+                {previewActionError && (
+                  <p className="mt-3 rounded-xl bg-red-50 px-4 py-3 text-xs font-semibold text-red-600">
+                    {previewActionError}
+                  </p>
+                )}
+
+                <div className="mt-4 max-h-[520px] space-y-3 overflow-y-auto pr-2">
+                  {nextClassReadiness.length > 0 ? (
+                    nextClassReadiness.map((preview) => (
+                      <div
+                        key={preview.id}
+                        className="rounded-xl border border-stone-100 bg-stone-50/70 p-4"
+                      >
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-base font-bold text-stone-900">
+                                {preview.title}
+                              </p>
+                              <span className="rounded-full bg-white px-3 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-[#e65100]">
+                                {preview.status}
+                              </span>
+                            </div>
+                            <p className="mt-2 max-w-3xl text-xs leading-relaxed text-stone-500">
+                              {preview.previewContent || "No preview content yet."}
+                            </p>
+                            <p className="mt-2 text-[11px] font-semibold text-stone-400">
+                              {preview.questions.length} readiness questions
+                            </p>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2">
+                            {preview.status === "DRAFT" && (
+                              <button
+                                type="button"
+                                onClick={() => handlePublishPreview(preview.id)}
+                                className="rounded-full border border-stone-900 px-4 py-2 text-xs font-bold text-stone-900 transition-colors hover:bg-white"
+                              >
+                                Publish
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleAnalyzePreview(preview.id)}
+                              className="rounded-full bg-white px-4 py-2 text-xs font-bold text-[#d84315] shadow-sm ring-1 ring-orange-100 transition-colors hover:bg-orange-50"
+                            >
+                              Analyze
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
+                          {preview.summary ? (
+                            <>
+                              <div className="rounded-xl bg-white p-4 ring-1 ring-stone-100">
+                                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-stone-400">
+                                  Participation
+                                </p>
+                                <p className="mt-2 text-2xl font-bold text-stone-900">
+                                  {preview.summary.participationCount}
+                                </p>
+                                <p className="mt-1 text-[11px] text-stone-500">
+                                  students submitted
+                                </p>
+                              </div>
+                              <div className="rounded-xl bg-white p-4 ring-1 ring-stone-100">
+                                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-stone-400">
+                                  Overall readiness
+                                </p>
+                                <p className="mt-2 text-2xl font-bold text-stone-900">
+                                  {preview.summary.overallReadinessScore}%
+                                </p>
+                                <p className="mt-1 text-[11px] text-stone-500">
+                                  from multiple-choice responses
+                                </p>
+                              </div>
+                              <div className="rounded-xl bg-white p-4 ring-1 ring-stone-100">
+                                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-stone-400">
+                                  Recommendation
+                                </p>
+                                <p className="mt-2 line-clamp-3 text-xs font-semibold leading-relaxed text-stone-700">
+                                  {preview.summary.aiRecommendations[0] ?? "No recommendation yet."}
+                                </p>
+                              </div>
+                            </>
+                          ) : (
+                            <p className="rounded-xl bg-white p-4 text-xs font-semibold text-stone-500 ring-1 ring-stone-100 lg:col-span-3">
+                              No readiness responses analyzed yet.
+                            </p>
+                          )}
+                        </div>
+
+                        {preview.summary && (
+                          <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                            <div className="rounded-xl bg-white p-4 ring-1 ring-stone-100">
+                              <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-stone-400">
+                                Topic readiness
+                              </p>
+                              <div className="mt-3 max-h-[210px] space-y-2 overflow-y-auto pr-1">
+                                {preview.summary.topicReadiness.map((topic) => (
+                                  <div
+                                    key={topic.questionId}
+                                    className="flex items-center justify-between gap-3 rounded-lg bg-stone-50 px-3 py-2"
+                                  >
+                                    <div className="min-w-0">
+                                      <p className="truncate text-xs font-bold text-stone-800">
+                                        {topic.topic}
+                                      </p>
+                                      <p className="text-[11px] text-stone-500">
+                                        {topic.correctResponses}/{topic.totalResponses} correct
+                                      </p>
+                                    </div>
+                                    <span className="text-sm font-bold text-stone-900">
+                                      {topic.correctRate}%
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="rounded-xl bg-white p-4 ring-1 ring-stone-100">
+                              <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-stone-400">
+                                Revision note
+                              </p>
+                              <div className="mt-3 space-y-2">
+                                <input
+                                  value={revisionTopic}
+                                  onChange={(event) => setRevisionTopic(event.target.value)}
+                                  placeholder="Topic, e.g. Security Group"
+                                  className="w-full rounded-xl border border-stone-200 px-3 py-2 text-xs outline-none focus:border-orange-300"
+                                />
+                                <textarea
+                                  value={revisionText}
+                                  onChange={(event) => setRevisionText(event.target.value)}
+                                  placeholder="What should be reviewed before the next class?"
+                                  className="min-h-20 w-full rounded-xl border border-stone-200 px-3 py-2 text-xs outline-none focus:border-orange-300"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleCreateRevision(preview)}
+                                  className="rounded-full bg-[#e65100] px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-[#d84315]"
+                                >
+                                  Save and publish note
+                                </button>
+                              </div>
+                              {preview.summary.revisionNotes.length > 0 && (
+                                <div className="mt-3 max-h-[180px] space-y-2 overflow-y-auto pr-1">
+                                  {preview.summary.revisionNotes.map((note) => (
+                                    <div
+                                      key={note.id}
+                                      className="rounded-lg bg-orange-50 px-3 py-2 text-xs text-stone-700"
+                                    >
+                                      <p className="font-bold">{note.topic}</p>
+                                      <p className="mt-1">{note.explanation}</p>
+                                      <p className="mt-1 text-[10px] font-bold uppercase text-[#d84315]">
+                                        {note.isPublished ? "Published to next class" : "Draft"}
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="rounded-xl bg-stone-50 p-4 text-sm font-semibold text-stone-500">
+                      No next-class readiness preview has been prepared for this session yet.
+                    </p>
+                  )}
+                </div>
+              </section>
+
+              <section className="rounded-2xl border border-stone-200/80 bg-white/95 p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-bold text-stone-900">
@@ -397,7 +711,7 @@ export default function TeacherSessionPage() {
                   <Layers size={18} className="text-[#e65100]" />
                 </div>
 
-                <div className="mt-4 space-y-3">
+                <div className="mt-4 max-h-[430px] space-y-3 overflow-y-auto pr-2">
                   {summary.topicRanking.length > 0 ? (
                     summary.topicRanking.map((topic, index) => (
                       <div
@@ -469,7 +783,7 @@ export default function TeacherSessionPage() {
                   <Layers size={18} className="text-[#e65100]" />
                 </div>
 
-                <div className="mt-4 overflow-hidden rounded-xl border border-stone-100">
+                <div className="mt-4 max-h-[360px] overflow-auto rounded-xl border border-stone-100">
                   {summary.answerReferences.length > 0 ? (
                     <div className="overflow-x-auto">
                       <table className="w-full min-w-[760px] border-collapse bg-white text-left text-xs">
@@ -537,22 +851,25 @@ export default function TeacherSessionPage() {
                 </div>
               </section>
 
-              <section className="space-y-3">
-                <div>
-                  <h3 className="text-sm font-bold text-stone-900">
-                    Question feed
-                  </h3>
-                  <p className="text-xs text-stone-500">
-                    Questions students asked in this session.
-                  </p>
+              <section className="rounded-2xl border border-stone-200/80 bg-white/95 p-5 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-stone-900">
+                      Question feed
+                    </h3>
+                    <p className="text-xs text-stone-500">
+                      Questions students asked in this session.
+                    </p>
+                  </div>
+                  <MessageSquareText size={18} className="text-[#e65100]" />
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <div className="mt-4 grid max-h-[430px] grid-cols-1 gap-3 overflow-y-auto pr-2 lg:grid-cols-2">
                   {summary.questions.length > 0 ? (
                     summary.questions.map((question) => (
                       <article
                         key={question.id}
-                        className="rounded-2xl border border-stone-200/80 bg-white/95 p-4 shadow-sm"
+                        className="rounded-2xl border border-stone-200/80 bg-stone-50/60 p-4"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-center gap-2 min-w-0">
@@ -630,7 +947,7 @@ export default function TeacherSessionPage() {
               </section>
 
               <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="rounded-2xl border border-stone-200/80 bg-white/95 p-5 shadow-sm">
+                <div className="flex h-[430px] flex-col rounded-2xl border border-stone-200/80 bg-white/95 p-5 shadow-sm">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h3 className="text-sm font-bold text-stone-900">
@@ -643,7 +960,7 @@ export default function TeacherSessionPage() {
                     <Camera size={18} className="text-[#e65100]" />
                   </div>
 
-                  <div className="mt-4 space-y-3">
+                  <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto pr-2">
                     {summary.attendances.length > 0 ? (
                       summary.attendances.map((attendance) => (
                         <div
@@ -680,7 +997,7 @@ export default function TeacherSessionPage() {
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-stone-200/80 bg-white/95 p-5 shadow-sm">
+                <div className="flex h-[430px] flex-col rounded-2xl border border-stone-200/80 bg-white/95 p-5 shadow-sm">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h3 className="text-sm font-bold text-stone-900">
@@ -693,7 +1010,7 @@ export default function TeacherSessionPage() {
                     <ImageIcon size={18} className="text-[#e65100]" />
                   </div>
 
-                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="mt-4 grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto pr-2 sm:grid-cols-2">
                     {summary.chatImages.length > 0 ? (
                       summary.chatImages.map((image) => (
                         <a
@@ -744,6 +1061,103 @@ export default function TeacherSessionPage() {
           )}
         </div>
       </main>
+
+      {isPreviewModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[1px]">
+          <form
+            onSubmit={handleCreatePreview}
+            className="w-full max-w-[560px] rounded-[26px] border border-stone-100 bg-white p-7 shadow-2xl"
+          >
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-bold text-stone-950">
+                  Prepare next class
+                </h3>
+                <p className="mt-1 text-sm leading-relaxed text-stone-500">
+                  Create a short preview and readiness check for the next session.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPreviewModalOpen(false)}
+                className="rounded-md p-1 text-stone-400 transition-colors hover:text-stone-700"
+                aria-label="Close next-class preview modal"
+              >
+                x
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <label className="block">
+                <span className="text-xs font-bold text-stone-500">
+                  Next session
+                </span>
+                <select
+                  value={nextSessionId}
+                  onChange={(event) => setNextSessionId(event.target.value)}
+                  className="mt-2 w-full rounded-2xl border border-stone-200 px-4 py-3 text-sm outline-none focus:border-orange-300"
+                >
+                  <option value="">Choose a session</option>
+                  {teacherSessions
+                    .filter((session) => session.id !== sessionId)
+                    .map((session) => (
+                      <option key={session.id} value={session.id}>
+                        {session.week} - {session.title}
+                      </option>
+                    ))}
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-bold text-stone-500">
+                  Preview title
+                </span>
+                <input
+                  value={previewTitle}
+                  onChange={(event) => setPreviewTitle(event.target.value)}
+                  placeholder="Amazon EC2 preview"
+                  className="mt-2 w-full rounded-2xl border border-stone-200 px-4 py-3 text-sm outline-none focus:border-orange-300"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-bold text-stone-500">
+                  Preview content
+                </span>
+                <textarea
+                  value={previewContent}
+                  onChange={(event) => setPreviewContent(event.target.value)}
+                  placeholder="Short context students should read before answering the readiness check."
+                  className="mt-2 min-h-28 w-full rounded-2xl border border-stone-200 px-4 py-3 text-sm outline-none focus:border-orange-300"
+                />
+              </label>
+
+              {previewActionError && (
+                <p className="rounded-xl bg-red-50 px-4 py-3 text-xs font-semibold text-red-600">
+                  {previewActionError}
+                </p>
+              )}
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setIsPreviewModalOpen(false)}
+                className="rounded-full border border-stone-950 px-5 py-2 text-[13px] font-bold text-stone-950 transition-all hover:bg-stone-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isPreviewSaving}
+                className="rounded-full bg-[#e65100] px-5 py-2 text-[13px] font-bold text-white shadow-sm transition-all hover:bg-[#d84315] disabled:opacity-50"
+              >
+                {isPreviewSaving ? "Creating..." : "Create preview"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

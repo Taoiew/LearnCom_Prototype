@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
             }
           }
         },
-        orderBy: { date: "desc" }
+        orderBy: { date: "asc" }
       })
     } else {
       // Student gets active sessions only
@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
             }
           }
         },
-        orderBy: { date: "desc" }
+        orderBy: { date: "asc" }
       })
     }
 

@@ -399,3 +399,97 @@ model AnswerReference {
   @@index([studentMessageId])
   @@index([sessionId])
 }
+
+model NextClassPreview {
+  id               String    @id @default(cuid())
+  currentSessionId String
+  nextSessionId    String
+  subjectId        String
+  title            String
+  previewContent   String
+  materialIds      Json
+  status           String    @default("DRAFT")
+  createdById      String
+  createdAt        DateTime  @default(now())
+  publishedAt      DateTime?
+
+  questions        NextClassReadinessQuestion[]
+  responses        NextClassReadinessResponse[]
+  summary          NextClassFeedbackSummary?
+
+  @@index([currentSessionId])
+  @@index([nextSessionId])
+  @@index([subjectId])
+}
+
+model NextClassReadinessQuestion {
+  id                  String   @id @default(cuid())
+  previewId           String
+  topic               String
+  questionText        String
+  choices             Json
+  correctChoiceIndex  Int
+  misconceptionLabels Json
+  materialReferences  Json?
+  order               Int
+
+  preview             NextClassPreview @relation(fields: [previewId], references: [id], onDelete: Cascade)
+  responses           NextClassReadinessResponse[]
+
+  @@index([previewId])
+}
+
+model NextClassReadinessResponse {
+  id                  String   @id @default(cuid())
+  previewId           String
+  questionId          String
+  studentId           String
+  selectedChoiceIndex Int
+  isCorrect           Boolean
+  answeredAt          DateTime @default(now())
+
+  preview             NextClassPreview             @relation(fields: [previewId], references: [id], onDelete: Cascade)
+  question            NextClassReadinessQuestion   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, studentId])
+  @@index([previewId])
+  @@index([studentId])
+}
+
+model NextClassFeedbackSummary {
+  id                    String   @id @default(cuid())
+  previewId             String   @unique
+  nextSessionId          String
+  participationCount     Int
+  eligibleStudentCount   Int
+  participationRate      Float
+  overallReadinessScore  Float
+  topicReadiness         Json
+  commonMisconceptions   Json
+  aiRecommendations      Json
+  generatedAt            DateTime @default(now())
+
+  preview                NextClassPreview @relation(fields: [previewId], references: [id], onDelete: Cascade)
+  revisionNotes          TeacherRevisionNote[]
+
+  @@index([nextSessionId])
+}
+
+model TeacherRevisionNote {
+  id             String   @id @default(cuid())
+  summaryId      String
+  nextSessionId  String
+  topic          String
+  explanation    String
+  example        String?
+  teachingAction String?
+  priority       String
+  isPublished    Boolean  @default(false)
+  createdById    String
+  createdAt      DateTime @default(now())
+
+  summary        NextClassFeedbackSummary @relation(fields: [summaryId], references: [id], onDelete: Cascade)
+
+  @@index([summaryId])
+  @@index([nextSessionId])
+}

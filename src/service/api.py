@@ -1,0 +1,596 @@
+import os
+import json
+from collections.abc import Callable
+from contextlib import AbstractContextManager
+from pathlib import Path
+from typing import Any
+
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    status,
+)
+from pydantic import BaseModel, Field
+
+from schemas.material_contract import (
+    MaterialStatusResponse,
+    MaterialUploadResponse,
+)
+from schemas.material_processing_contract import (
+    MaterialProcessAPIResponse,
+    MaterialProcessingResponse,
+)
+from schemas.model_contract import ChatRequest, ChatResponse
+from schemas.rubric_contract import (
+    RubricCreateRequest,
+    RubricDefinition,
+    RubricEvaluation,
+    RubricEvaluationRequest,
+    SessionReport,
+)
+from src.agents.multimodal_agent import MultimodalAgent
+from src.agents.multimodal_factory import (
+    multimodal_agent_context,
+)
+from src.ingestion.material_storage import (
+    MaterialStorage,
+    MaterialStorageError,
+)
+from src.service.rubric_service import (
+    RubricService,
+    RubricServiceError,
+)
+from src.service.session_analytics_service import (
+    SessionAnalyticsService,
+)
+from src.service.material_processing_service import (
+    MaterialProcessingError,
+    MaterialProcessingProviderError,
+    MaterialProcessingService,
+)
+
+
+class ChatAPIRequest(BaseModel):
+    request: ChatRequest
+    course_relevance_score: float = Field(ge=0, le=1)
+    unsafe: bool = False
+
+
+def create_app(
+    pipeline: Any,
+    material_storage: MaterialStorage | None = None,
+    material_processing_service: (
+        MaterialProcessingService | None
+    ) = None,
+    material_processing_service_factory: (
+        Callable[
+            [MaterialStorage],
+            MaterialProcessingService,
+        ]
+        | None
+    ) = None,
+    multimodal_agent_context_factory: (
+        Callable[
+            [str],
+            AbstractContextManager[
+                MultimodalAgent | None
+            ],
+        ]
+        | None
+    ) = None,
+    rubric_service: RubricService | None = None,
+    analytics_service: SessionAnalyticsService | None = None,
+) -> FastAPI:
+    app = FastAPI(
+        title="Learning Companion Model API",
+        version="0.1.0",
+    )
+
+    storage = (
+        material_storage
+        if material_storage is not None
+        else MaterialStorage(
+            storage_root=Path(
+                os.getenv(
+                    "MATERIAL_UPLOAD_DIR",
+                    "data/uploads",
+                )
+            )
+        )
+    )
+
+    if material_processing_service is not None:
+        processing_service = material_processing_service
+    elif material_processing_service_factory is not None:
+        processing_service = (
+            material_processing_service_factory(storage)
+        )
+    else:
+        processing_service = MaterialProcessingService(
+            storage=storage,
+            work_root=Path(
+                os.getenv(
+                    "MATERIAL_PROCESSING_WORK_DIR",
+                    "data/material_processing",
+                )
+            ),
+        )
+
+    agent_context_factory = (
+        multimodal_agent_context_factory
+        or multimodal_agent_context
+    )
+
+    resolved_rubric_service = rubric_service or RubricService()
+    resolved_analytics_service = (
+        analytics_service or SessionAnalyticsService()
+    )
+
+    @app.get("/health")
+    def health() -> dict[str, str]:
+        return {
+            "status": "ok",
+            "service": "learning-companion-model",
+        }
+
+    @app.post(
+        "/v1/chat",
+        response_model=ChatResponse,
+    )
+    def chat(payload: ChatAPIRequest) -> ChatResponse:
+        response = pipeline.run(
+            request=payload.request,
+            course_relevance_score=(
+                payload.course_relevance_score
+            ),
+            unsafe=payload.unsafe,
+        )
+        resolved_analytics_service.record_chat(
+            payload.request,
+            response,
+        )
+        return response
+
+    @app.post(
+        "/v1/materials/upload",
+        response_model=MaterialUploadResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def upload_material(
+        file: UploadFile = File(...),
+    ) -> MaterialUploadResponse:
+        try:
+            content = await file.read(
+                storage.max_file_bytes + 1
+            )
+
+            return storage.store(
+                filename=file.filename or "",
+                content_type=file.content_type or "",
+                content=content,
+            )
+
+        except MaterialStorageError as exc:
+            message = str(exc)
+
+            if "exceeds maximum size" in message:
+                status_code = (
+                    status.HTTP_413_CONTENT_TOO_LARGE
+                )
+            elif "Unsupported material content type" in message:
+                status_code = (
+                    status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+                )
+            else:
+                status_code = status.HTTP_400_BAD_REQUEST
+
+            raise HTTPException(
+                status_code=status_code,
+                detail=message,
+            ) from exc
+
+        finally:
+            await file.close()
+
+    @app.post(
+        "/v1/materials/{material_id}/process",
+        response_model=MaterialProcessAPIResponse,
+    )
+    def process_material(
+        material_id: str,
+    ) -> MaterialProcessAPIResponse:
+        mode = _material_multimodal_mode()
+
+        try:
+            processing_service.mark_processing(material_id)
+
+            with agent_context_factory(mode) as agent:
+                processing_response = (
+                    processing_service.process(
+                        material_id=material_id,
+                        agent=agent,
+                    )
+                )
+        except ValueError as exc:
+            _persist_processing_failure_safely(
+                processing_service=processing_service,
+                material_id=material_id,
+                error_message=str(exc),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        except MaterialProcessingProviderError as exc:
+            _persist_processing_failure_safely(
+                processing_service=processing_service,
+                material_id=material_id,
+                error_message=(
+                    "External multimodal provider failed"
+                ),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "External multimodal provider failed"
+                ),
+            ) from exc
+        except MaterialProcessingError as exc:
+            message = str(exc)
+            status_code = _material_processing_error_status(
+                message
+            )
+            if status_code != status.HTTP_404_NOT_FOUND:
+                _persist_processing_failure_safely(
+                    processing_service=processing_service,
+                    material_id=material_id,
+                    error_message=message,
+                )
+
+            raise HTTPException(
+                status_code=status_code,
+                detail=message,
+            ) from exc
+
+        if processing_response.status.value == "failed":
+            status_code = (
+                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+                if _is_unsupported_media_error(
+                    processing_response.error
+                )
+                else status.HTTP_400_BAD_REQUEST
+            )
+            processing_service.persist_result(
+                processing_response
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail=(
+                    processing_response.error
+                    or "Material processing failed"
+                ),
+            )
+
+        processing_service.persist_result(
+            processing_response
+        )
+
+        return _to_material_process_api_response(
+            processing_response=processing_response,
+            work_root=processing_service.work_root,
+        )
+
+    @app.get(
+        "/v1/materials/{material_id}/status",
+        response_model=MaterialStatusResponse,
+    )
+    def material_status(
+        material_id: str,
+    ) -> MaterialStatusResponse:
+        try:
+            return processing_service.get_status(material_id)
+        except MaterialProcessingError as exc:
+            message = str(exc)
+            raise HTTPException(
+                status_code=_material_status_error_status(
+                    message
+                ),
+                detail=message,
+            ) from exc
+
+
+    @app.post(
+        "/v1/rubrics",
+        response_model=RubricDefinition,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_rubric(
+        payload: RubricCreateRequest,
+    ) -> RubricDefinition:
+        try:
+            return resolved_rubric_service.create(payload)
+        except RubricServiceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
+    @app.post(
+        "/v1/rubrics/upload",
+        response_model=RubricDefinition,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def upload_rubric(
+        course_id: str = Form(...),
+        class_session_id: str = Form(...),
+        title: str = Form(...),
+        file: UploadFile = File(...),
+    ) -> RubricDefinition:
+        try:
+            content = await file.read(25 * 1024 * 1024 + 1)
+            if len(content) > 25 * 1024 * 1024:
+                raise RubricServiceError(
+                    "Rubric file exceeds maximum size of 25 MB"
+                )
+            return resolved_rubric_service.create_from_file(
+                course_id=course_id,
+                class_session_id=class_session_id,
+                title=title,
+                filename=file.filename or "rubric",
+                content=content,
+            )
+        except RubricServiceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        finally:
+            await file.close()
+
+    @app.get(
+        "/v1/rubrics/{course_id}/{class_session_id}",
+        response_model=list[RubricDefinition],
+    )
+    def list_rubrics(
+        course_id: str,
+        class_session_id: str,
+    ) -> list[RubricDefinition]:
+        return resolved_rubric_service.store.list_for_session(
+            course_id,
+            class_session_id,
+        )
+
+    @app.post(
+        "/v1/rubrics/{rubric_id}/evaluate",
+        response_model=RubricEvaluation,
+    )
+    def evaluate_with_rubric(
+        rubric_id: str,
+        payload: RubricEvaluationRequest,
+    ) -> RubricEvaluation:
+        try:
+            rubric = resolved_rubric_service.store.get(rubric_id)
+            evaluation = resolved_rubric_service.evaluate(
+                rubric_id,
+                payload,
+            )
+            resolved_analytics_service.record_evaluation(
+                course_id=rubric.course_id,
+                class_session_id=rubric.class_session_id,
+                evaluation=evaluation,
+            )
+            return evaluation
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
+        except RubricServiceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+
+    @app.post(
+        "/v1/session-reports/{course_id}/{class_session_id}/generate",
+        response_model=SessionReport,
+    )
+    def generate_session_report(
+        course_id: str,
+        class_session_id: str,
+    ) -> SessionReport:
+        return resolved_analytics_service.generate_report(
+            course_id,
+            class_session_id,
+        )
+
+    @app.get(
+        "/v1/session-reports/{course_id}/{class_session_id}",
+        response_model=SessionReport,
+    )
+    def get_session_report(
+        course_id: str,
+        class_session_id: str,
+    ) -> SessionReport:
+        try:
+            return resolved_analytics_service.get_latest_report(
+                course_id,
+                class_session_id,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
+
+    return app
+
+
+def _material_multimodal_mode() -> str:
+    mode = os.getenv(
+        "MATERIAL_MULTIMODAL_AGENT",
+        "external",
+    ).strip().lower()
+
+    if mode not in {"none", "demo", "external"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "MATERIAL_MULTIMODAL_AGENT must be "
+                "'none', 'demo', or 'external'"
+            ),
+        )
+
+    return mode
+
+
+def _material_processing_error_status(
+    message: str,
+) -> int:
+    normalized = message.lower()
+
+    if "not found" in normalized:
+        return status.HTTP_404_NOT_FOUND
+
+    if "unsupported material" in normalized:
+        return status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+
+    return status.HTTP_400_BAD_REQUEST
+
+
+def _material_status_error_status(
+    message: str,
+) -> int:
+    normalized = message.lower()
+
+    if (
+        "not found" in normalized
+        or "invalid material_id" in normalized
+    ):
+        return status.HTTP_404_NOT_FOUND
+
+    return status.HTTP_409_CONFLICT
+
+
+def _persist_processing_failure_safely(
+    *,
+    processing_service: MaterialProcessingService,
+    material_id: str,
+    error_message: str,
+) -> None:
+    try:
+        processing_service.persist_failed(
+            material_id=material_id,
+            error_message=error_message,
+        )
+    except MaterialProcessingError:
+        pass
+
+
+def _is_unsupported_media_error(
+    message: str | None,
+) -> bool:
+    return bool(
+        message
+        and "unsupported material" in message.lower()
+    )
+
+
+def _to_material_process_api_response(
+    *,
+    processing_response: MaterialProcessingResponse,
+    work_root: Path,
+) -> MaterialProcessAPIResponse:
+    assets_manifest = Path(
+        processing_response.assets_manifest_path
+    )
+
+    return MaterialProcessAPIResponse(
+        material_id=processing_response.material_id,
+        file_type=processing_response.file_type,
+        processing_status=processing_response.status,
+        total_pages=processing_response.total_pages,
+        total_assets=_read_total_assets(assets_manifest),
+        total_vision_requests=(
+            processing_response.total_vision_requests
+        ),
+        total_vision_responses=(
+            processing_response.total_vision_responses
+        ),
+        verified_count=processing_response.verified_count,
+        needs_review_count=(
+            processing_response.needs_review_count
+        ),
+        rejected_count=processing_response.rejected_count,
+        pages_manifest_ref=_artifact_ref(
+            processing_response.pages_manifest_path,
+            work_root,
+        ),
+        assets_manifest_ref=_artifact_ref(
+            processing_response.assets_manifest_path,
+            work_root,
+        ),
+        vision_requests_ref=_artifact_ref(
+            processing_response.vision_requests_path,
+            work_root,
+        ),
+        vision_responses_ref=_optional_artifact_ref(
+            processing_response.vision_responses_path,
+            work_root,
+        ),
+        vision_verifications_ref=_optional_artifact_ref(
+            processing_response.vision_verifications_path,
+            work_root,
+        ),
+        error=processing_response.error,
+    )
+
+
+def _read_total_assets(
+    assets_manifest_path: Path,
+) -> int:
+    try:
+        payload = json.loads(
+            assets_manifest_path.read_text(
+                encoding="utf-8"
+            )
+        )
+        total_assets = payload.get("total_assets", 0)
+
+        if isinstance(total_assets, int) and total_assets >= 0:
+            return total_assets
+
+    except Exception:
+        pass
+
+    return 0
+
+
+def _optional_artifact_ref(
+    path: str | None,
+    work_root: Path,
+) -> str | None:
+    if path is None:
+        return None
+
+    return _artifact_ref(path, work_root)
+
+
+def _artifact_ref(
+    path: str,
+    work_root: Path,
+) -> str:
+    resolved_path = Path(path).resolve()
+    resolved_root = work_root.resolve()
+
+    try:
+        relative_path = resolved_path.relative_to(
+            resolved_root
+        )
+    except ValueError:
+        return resolved_path.name
+
+    return relative_path.as_posix()

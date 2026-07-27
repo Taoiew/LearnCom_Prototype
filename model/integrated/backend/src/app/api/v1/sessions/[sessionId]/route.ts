@@ -182,9 +182,119 @@ export async function DELETE(
       )
     }
 
-    await prisma.classSession.delete({
-      where: { id: sessionId }
-    })
+    const [criteria, conversations, quizzes, report, previews] = await Promise.all([
+      prisma.sessionCriteria.findMany({
+        where: { sessionId },
+        select: { id: true },
+      }),
+      prisma.conversation.findMany({
+        where: { sessionId },
+        select: { id: true },
+      }),
+      prisma.quiz.findMany({
+        where: { sessionId },
+        select: { id: true },
+      }),
+      prisma.sessionReport.findUnique({
+        where: { sessionId },
+        select: { id: true },
+      }),
+      prisma.nextClassPreview.findMany({
+        where: {
+          OR: [
+            { currentSessionId: sessionId },
+            { nextSessionId: sessionId },
+          ],
+        },
+        select: { id: true },
+      }),
+    ])
+
+    const criteriaIds = criteria.map((criterion) => criterion.id)
+    const conversationIds = conversations.map((conversation) => conversation.id)
+    const quizIds = quizzes.map((quiz) => quiz.id)
+    const previewIds = previews.map((preview) => preview.id)
+
+    await prisma.$transaction([
+      prisma.teacherRevisionNote.deleteMany({
+        where: {
+          OR: [
+            { nextSessionId: sessionId },
+            { summary: { previewId: { in: previewIds } } },
+          ],
+        },
+      }),
+      prisma.nextClassFeedbackSummary.deleteMany({
+        where: { previewId: { in: previewIds } },
+      }),
+      prisma.nextClassReadinessResponse.deleteMany({
+        where: { previewId: { in: previewIds } },
+      }),
+      prisma.nextClassReadinessQuestion.deleteMany({
+        where: { previewId: { in: previewIds } },
+      }),
+      prisma.nextClassPreview.deleteMany({
+        where: { id: { in: previewIds } },
+      }),
+      prisma.answerReference.deleteMany({
+        where: { sessionId },
+      }),
+      prisma.chatImageLog.deleteMany({
+        where: { sessionId },
+      }),
+      prisma.attendance.deleteMany({
+        where: { sessionId },
+      }),
+      prisma.trainingData.deleteMany({
+        where: { sessionId },
+      }),
+      prisma.duringClassLog.deleteMany({
+        where: { sessionId },
+      }),
+      prisma.criteriaResult.deleteMany({
+        where: {
+          OR: [
+            { quizId: { in: quizIds } },
+            { criteriaId: { in: criteriaIds } },
+          ],
+        },
+      }),
+      prisma.quizQuestion.deleteMany({
+        where: {
+          OR: [
+            { quizId: { in: quizIds } },
+            { criteriaId: { in: criteriaIds } },
+          ],
+        },
+      }),
+      prisma.quiz.deleteMany({
+        where: { sessionId },
+      }),
+      prisma.conversationSummary.deleteMany({
+        where: { conversationId: { in: conversationIds } },
+      }),
+      prisma.message.deleteMany({
+        where: { conversationId: { in: conversationIds } },
+      }),
+      prisma.conversation.deleteMany({
+        where: { sessionId },
+      }),
+      prisma.studentReport.deleteMany({
+        where: report ? { sessionReportId: report.id } : { id: { in: [] } },
+      }),
+      prisma.sessionReport.deleteMany({
+        where: { sessionId },
+      }),
+      prisma.material.deleteMany({
+        where: { sessionId },
+      }),
+      prisma.sessionCriteria.deleteMany({
+        where: { sessionId },
+      }),
+      prisma.classSession.delete({
+        where: { id: sessionId },
+      }),
+    ])
 
     return NextResponse.json(
       { success: true },
