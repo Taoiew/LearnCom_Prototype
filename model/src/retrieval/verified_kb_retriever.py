@@ -24,8 +24,6 @@ class VerifiedKBRetriever(InMemoryRetriever):
             verified_kb.material_id: verified_kb
         }
 
-        # เก็บไว้เพื่อให้โค้ดเดิมที่อ้าง
-        # retriever.verified_kb ยังใช้ได้
         self.verified_kb = verified_kb
 
         super().__init__(

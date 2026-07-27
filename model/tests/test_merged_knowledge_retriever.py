@@ -103,6 +103,10 @@ def test_merged_retriever_combines_and_ranks() -> None:
         results[1].chunk.chunk_id
         == "course-chunk"
     )
+    assert (
+        "conversation_attachment"
+        in results[0].chunk.image_ids
+    )
 
 
 def test_request_without_conversation_uses_course_only() -> None:

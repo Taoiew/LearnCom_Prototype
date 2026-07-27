@@ -18,6 +18,9 @@ from schemas.vision_contract import (
     VisualElement,
     VisualElementType,
 )
+from src.agents.gemini_multimodal_agent import (
+    GeminiMultimodalProviderError,
+)
 from src.agents.multimodal_agent import MultimodalAgent
 from src.agents.multimodal_client import (
     MultimodalTransportError,
@@ -87,6 +90,17 @@ class FailingMultimodalAgent(MultimodalAgent):
     ) -> VisionResponse:
         raise MultimodalTransportError(
             "provider transport failed with secret-key"
+        )
+
+
+class FailingGeminiMultimodalAgent(MultimodalAgent):
+    def analyze(
+        self,
+        request: VisionRequest,
+    ) -> VisionResponse:
+        raise GeminiMultimodalProviderError(
+            "Gemini Vision request was rejected with HTTP status 400: "
+            "models/gemini-3.5-flash is not found"
         )
 
 
@@ -349,6 +363,32 @@ def test_external_provider_failure_returns_502(
         "External multimodal provider failed"
     )
     assert "secret-key" not in response.text
+
+
+def test_gemini_provider_failure_returns_safe_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "MATERIAL_MULTIMODAL_AGENT",
+        "external",
+    )
+    client, storage = create_client(
+        tmp_path,
+        agent=FailingGeminiMultimodalAgent(),
+    )
+    material_id = store_pdf(storage)
+
+    response = client.post(
+        f"/v1/materials/{material_id}/process"
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == (
+        "External multimodal provider failed: "
+        "Gemini Vision request was rejected with HTTP status 400: "
+        "models/gemini-3.5-flash is not found"
+    )
 
 
 def test_existing_health_chat_and_upload_remain_green(

@@ -5,6 +5,9 @@ from src.retrieval.conversation_knowledge_store import (
 from src.retrieval.course_knowledge_store import (
     CourseKnowledgeStore,
 )
+from src.ingestion.pdf_ingestor import (
+    MaterialChunk,
+)
 from src.retrieval.in_memory_retriever import (
     RetrievedChunk,
 )
@@ -52,19 +55,37 @@ class MergedKnowledgeRetriever:
             top_k=top_k,
         )
 
+        overview_query = self._overview_query(
+            request.question
+        )
+
+        if overview_query is not None:
+            course_results = self._merge_results(
+                course_results=course_results,
+                conversation_results=self.course_store.search(
+                    course_id=request.course_id,
+                    class_session_id=request.class_session_id,
+                    query=overview_query,
+                    top_k=top_k,
+                ),
+                top_k=top_k,
+            )
+
         conversation_results: list[
             RetrievedChunk
         ] = []
 
         if request.conversation_id:
             conversation_results = (
-                self.conversation_store.search(
-                    student_id=request.student_id,
-                    conversation_id=(
-                        request.conversation_id
-                    ),
-                    query=request.question,
-                    top_k=top_k,
+                self._boost_conversation_results(
+                    self.conversation_store.search(
+                        student_id=request.student_id,
+                        conversation_id=(
+                            request.conversation_id
+                        ),
+                        query=request.question,
+                        top_k=top_k,
+                    )
                 )
             )
 
@@ -119,3 +140,79 @@ class MergedKnowledgeRetriever:
         )
 
         return ordered[:top_k]
+
+    @staticmethod
+    def _boost_conversation_results(
+        results: list[RetrievedChunk],
+    ) -> list[RetrievedChunk]:
+        return [
+            RetrievedChunk(
+                chunk=(
+                    MergedKnowledgeRetriever._tag_conversation_chunk(
+                        result.chunk
+                    )
+                ),
+                score=max(result.score, 0.35),
+            )
+            for result in results
+        ]
+
+    @staticmethod
+    def _tag_conversation_chunk(
+        chunk: MaterialChunk,
+    ) -> MaterialChunk:
+        if "conversation_attachment" in chunk.image_ids:
+            return chunk
+
+        return MaterialChunk(
+            chunk_id=chunk.chunk_id,
+            material_id=chunk.material_id,
+            material_name=chunk.material_name,
+            page_number=chunk.page_number,
+            chunk_index=chunk.chunk_index,
+            text=chunk.text,
+            chunk_type=chunk.chunk_type,
+            source_type=chunk.source_type,
+            image_ids=(
+                tuple(chunk.image_ids)
+                + ("conversation_attachment",)
+            ),
+            source_chunk_ids=chunk.source_chunk_ids,
+            bounding_box=chunk.bounding_box,
+        )
+
+    @staticmethod
+    def _overview_query(question: str) -> str | None:
+        normalized = " ".join(
+            question.lower().strip().split()
+        )
+
+        if not normalized:
+            return None
+
+        broad_targets = (
+            "session",
+            "course",
+            "class",
+            "lesson",
+            "material",
+            "module",
+        )
+
+        asks_about = (
+            "about" in normalized
+            or "overview" in normalized
+            or "summary" in normalized
+            or "เกี่ยวกับ" in normalized
+        )
+
+        if asks_about and any(
+            target in normalized
+            for target in broad_targets
+        ):
+            return (
+                "module overview topics objectives summary "
+                "introduction course description key takeaways"
+            )
+
+        return None

@@ -202,6 +202,7 @@ Rules:
         client: MultimodalJSONClient,
         agent_model: str,
         prompt_version: str = PROMPT_VERSION,
+        system_prompt: str | None = None,
     ) -> None:
         if not agent_model.strip():
             raise ValueError(
@@ -216,6 +217,7 @@ Rules:
         self.client = client
         self.agent_model = agent_model
         self.prompt_version = prompt_version
+        self.system_prompt = system_prompt or self.SYSTEM_PROMPT
 
     def analyze(
         self,
@@ -223,7 +225,7 @@ Rules:
     ) -> VisionResponse:
         raw_result = self.client.chat_json(
             request=request,
-            system_prompt=self.SYSTEM_PROMPT,
+            system_prompt=self.system_prompt,
             temperature=0.0,
         )
 

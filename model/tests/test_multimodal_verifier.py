@@ -3,9 +3,11 @@ from pathlib import Path
 
 from schemas.kb_contract import ReviewStatus
 from schemas.vision_contract import (
+    ExtractedTable,
     VisionRequest,
     VisionResponse,
     VisionResponseStatus,
+    VisualRelationship,
     VisualElement,
     VisualElementType,
 )
@@ -187,6 +189,63 @@ def test_verifier_rejects_failed_response(
         "Multimodal agent returned failed status"
         in result.reasons
     )
+
+
+def test_verifier_accepts_table_relationships_and_minor_box_overflow(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "page.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    request = create_request(image_path).model_copy(
+        update={
+            "image_width_pixels": 960,
+            "image_height_pixels": 840,
+        }
+    )
+    response = create_verified_response(request).model_copy(
+        update={
+            "visual_elements": [],
+            "tables": [
+                ExtractedTable(
+                    table_id="table_current",
+                    headers=["Course", "Credit"],
+                    rows=[["CS223", "3"]],
+                    bounding_box=(24.0, 300.0, 976.0, 698.0),
+                    confidence=0.95,
+                ),
+                ExtractedTable(
+                    table_id="table_summary",
+                    headers=["Category", "CR"],
+                    rows=[["THIS SEMESTER", "21"]],
+                    bounding_box=(24.0, 700.0, 976.0, 872.0),
+                    confidence=0.95,
+                ),
+            ],
+            "relationships": [
+                VisualRelationship(
+                    source_element_id="table_current",
+                    target_element_id="table_summary",
+                    relation="summarizes credits in",
+                    confidence=0.9,
+                )
+            ],
+            "warnings": [
+                "Top row is partially cropped at the top edge."
+            ],
+        }
+    )
+
+    result = MultimodalVerifier().verify(
+        request=request,
+        response=response,
+    )
+
+    assert result.review_status is ReviewStatus.NEEDS_REVIEW
+    assert result.is_verified is False
+    assert result.reasons == [
+        "Response contains multimodal warnings"
+    ]
 
 
 def test_batch_verifier_routes_demo_to_review_with_zero_verified(

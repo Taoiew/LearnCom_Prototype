@@ -2,7 +2,7 @@ import json
 import os
 import uuid
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,7 @@ from schemas.material_processing_contract import (
 )
 from schemas.model_contract import ChatRequest, ChatResponse
 from src.agents.multimodal_agent import MultimodalAgent
+from src.agents.multimodal_client import MultimodalClientError
 from src.agents.multimodal_factory import (
     multimodal_agent_context,
 )
@@ -48,12 +49,27 @@ from src.service.material_processing_service import (
     MaterialProcessingProviderError,
     MaterialProcessingService,
 )
+from src.service.verified_kb_build_service import VerifiedKBBuildService
+from src.retrieval.course_knowledge_store import CourseKnowledgeStore
 
 
 class ChatAPIRequest(BaseModel):
     request: ChatRequest
     course_relevance_score: float = Field(ge=0, le=1)
     unsafe: bool = False
+
+
+class MaterialActivateRequest(BaseModel):
+    course_id: str = Field(min_length=1)
+    class_session_id: str = Field(min_length=1)
+
+
+class MaterialActivateResponse(BaseModel):
+    material_id: str
+    course_id: str
+    class_session_id: str
+    verified_kb_ref: str
+    active_material_ids: list[str]
 
 
 class RubricCreateRequest(BaseModel):
@@ -200,6 +216,7 @@ def create_app(
     ) = None,
     rubric_service: InMemoryRubricService | None = None,
     session_report_service: InMemorySessionReportService | None = None,
+    course_store: CourseKnowledgeStore | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Learning Companion Model API",
@@ -246,6 +263,8 @@ def create_app(
     )
     rubric_service_impl = rubric_service or InMemoryRubricService()
     session_report_service_impl = session_report_service or InMemorySessionReportService()
+    course_store_impl = course_store
+    verified_kb_builder = VerifiedKBBuildService()
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -312,36 +331,41 @@ def create_app(
 
         try:
             content = await file.read()
-
-            attachment = (
-                attachment_service.upload_attachment(
-                    student_id=request.student_id,
-                    conversation_id=(
-                        request.conversation_id
-                    ),
-                    course_id=request.course_id,
-                    class_session_id=(
-                        request.class_session_id
-                    ),
-                    filename=(
-                        file.filename
-                        or "attachment"
-                    ),
-                    content_type=(
-                        file.content_type
-                        or "application/octet-stream"
-                    ),
-                    content=content,
+            with _chat_attachment_agent_context(
+                agent_context_factory
+            ) as agent:
+                attachment = (
+                    attachment_service.upload_attachment(
+                        student_id=request.student_id,
+                        conversation_id=(
+                            request.conversation_id
+                        ),
+                        course_id=request.course_id,
+                        class_session_id=(
+                            request.class_session_id
+                        ),
+                        filename=(
+                            file.filename
+                            or "attachment"
+                        ),
+                        content_type=(
+                            file.content_type
+                            or "application/octet-stream"
+                        ),
+                        content=content,
+                        agent=agent,
+                        auto_process=False,
+                    )
                 )
-            )
 
-            processed = (
-                attachment_service.process_attachment(
-                    attachment_id=(
-                        attachment.attachment_id
-                    ),
+                processed = (
+                    attachment_service.process_attachment(
+                        attachment_id=(
+                            attachment.attachment_id
+                        ),
+                        agent=agent,
+                    )
                 )
-            )
 
             chat_response = pipeline.run(
                 request=request,
@@ -401,15 +425,22 @@ def create_app(
 
         try:
             content = await file.read()
-            return attachment_service.upload_attachment(
-                student_id=student_id,
-                conversation_id=conversation_id,
-                course_id=course_id,
-                class_session_id=class_session_id,
-                filename=file.filename or "attachment",
-                content_type=file.content_type or "application/octet-stream",
-                content=content,
-            )
+            with _chat_attachment_agent_context(
+                agent_context_factory
+            ) as agent:
+                return attachment_service.upload_attachment(
+                    student_id=student_id,
+                    conversation_id=conversation_id,
+                    course_id=course_id,
+                    class_session_id=class_session_id,
+                    filename=file.filename or "attachment",
+                    content_type=(
+                        file.content_type
+                        or "application/octet-stream"
+                    ),
+                    content=content,
+                    agent=agent,
+                )
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -430,11 +461,19 @@ def create_app(
             )
 
         try:
-            return attachment_service.process_attachment(attachment_id=attachment_id)
+            with _chat_attachment_agent_context(
+                agent_context_factory
+            ) as agent:
+                return attachment_service.process_attachment(
+                    attachment_id=attachment_id,
+                    agent=agent,
+                )
         except KeyError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     @app.get(
         "/v1/chat/attachments/{attachment_id}/status",
@@ -592,18 +631,26 @@ def create_app(
                 detail=str(exc),
             ) from exc
         except MaterialProcessingProviderError as exc:
+            message = str(exc)
             _persist_processing_failure_safely(
                 processing_service=processing_service,
                 material_id=material_id,
-                error_message=(
-                    "External multimodal provider failed"
-                ),
+                error_message=message,
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=(
-                    "External multimodal provider failed"
-                ),
+                detail=message,
+            ) from exc
+        except MultimodalClientError as exc:
+            message = _external_provider_failure_message(exc)
+            _persist_processing_failure_safely(
+                processing_service=processing_service,
+                material_id=material_id,
+                error_message=message,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=message,
             ) from exc
         except MaterialProcessingError as exc:
             message = str(exc)
@@ -668,6 +715,100 @@ def create_app(
                 detail=message,
             ) from exc
 
+    @app.post(
+        "/v1/materials/{material_id}/activate",
+        response_model=MaterialActivateResponse,
+    )
+    def activate_material(
+        material_id: str,
+        payload: MaterialActivateRequest,
+    ) -> MaterialActivateResponse:
+        if course_store_impl is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Course knowledge store is not configured",
+            )
+
+        try:
+            material = storage.get(material_id)
+            material_status_response = (
+                processing_service.get_status(material_id)
+            )
+
+            if material_status_response.processing_status == "failed":
+                raise ValueError(
+                    "Material processing failed and cannot be activated"
+                )
+
+            artifact_dir = (
+                processing_service.work_root / material_id
+            )
+            output_dir = artifact_dir / "verified_kb"
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            try:
+                verified_kb_path = (
+                    verified_kb_builder._build_verified_kb_from_artifacts(
+                        material_id=material_id,
+                        material_name=material.original_filename,
+                        requests_path=artifact_dir / "vision_requests.json",
+                        responses_path=artifact_dir / "vision_responses.json",
+                        output_dir=output_dir,
+                        reviewer_id="system",
+                        rationale=(
+                            "Activated by instructor material upload"
+                        ),
+                        kb_version="course-material-v1",
+                    )
+                )
+            except Exception:
+                verified_kb_path = (
+                    verified_kb_builder._build_fallback_verified_kb_from_pages(
+                        material_id=material_id,
+                        material_name=material.original_filename,
+                        pages_path=artifact_dir / "pages.json",
+                        output_dir=output_dir,
+                        reviewer_id="system",
+                        rationale=(
+                            "Activated by instructor material upload"
+                        ),
+                        kb_version="course-material-v1",
+                    )
+                )
+
+            activated_material_id = course_store_impl.activate(
+                course_id=payload.course_id,
+                class_session_id=payload.class_session_id,
+                verified_kb_path=verified_kb_path,
+            )
+
+            return MaterialActivateResponse(
+                material_id=activated_material_id,
+                course_id=payload.course_id,
+                class_session_id=payload.class_session_id,
+                verified_kb_ref=str(
+                    verified_kb_path.relative_to(
+                        processing_service.work_root
+                    )
+                ),
+                active_material_ids=list(
+                    course_store_impl.active_material_ids(
+                        course_id=payload.course_id,
+                        class_session_id=payload.class_session_id,
+                    )
+                ),
+            )
+        except (MaterialStorageError, MaterialProcessingError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
+
     return app
 
 
@@ -677,16 +818,39 @@ def _material_multimodal_mode() -> str:
         "external",
     ).strip().lower()
 
-    if mode not in {"none", "demo", "external"}:
+    if mode not in {"none", "demo", "external", "gemini"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "MATERIAL_MULTIMODAL_AGENT must be "
-                "'none', 'demo', or 'external'"
+                "'none', 'demo', 'external', or 'gemini'"
             ),
         )
 
     return mode
+
+
+def _chat_attachment_agent_context(
+    agent_context_factory: Callable[
+        [str],
+        AbstractContextManager[MultimodalAgent | None],
+    ],
+) -> AbstractContextManager[MultimodalAgent | None]:
+    raw_mode = os.getenv("CHAT_ATTACHMENT_MULTIMODAL_AGENT")
+    if raw_mode is None or not raw_mode.strip():
+        return nullcontext(None)
+
+    mode = raw_mode.strip().lower()
+    if mode not in {"none", "demo", "external", "gemini"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "CHAT_ATTACHMENT_MULTIMODAL_AGENT must be "
+                "'none', 'demo', 'external', or 'gemini'"
+            ),
+        )
+
+    return agent_context_factory(mode)
 
 
 def _material_processing_error_status(
@@ -739,6 +903,22 @@ def _is_unsupported_media_error(
         message
         and "unsupported material" in message.lower()
     )
+
+
+def _external_provider_failure_message(
+    error: MultimodalClientError,
+) -> str:
+    message = "External multimodal provider failed"
+    if error.__class__.__module__ != (
+        "src.agents.gemini_multimodal_agent"
+    ):
+        return message
+
+    detail = str(error).strip()
+    if not detail:
+        return message
+
+    return f"{message}: {detail}"
 
 
 def _to_material_process_api_response(

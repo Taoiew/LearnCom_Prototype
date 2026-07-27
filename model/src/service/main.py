@@ -38,4 +38,5 @@ app = create_app(
     conversation_attachment_service=(
         conversation_attachment_service
     ),
+    course_store=course_knowledge_store,
 )

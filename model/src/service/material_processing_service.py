@@ -109,7 +109,7 @@ class MaterialProcessingService:
             )
         except MultimodalClientError as exc:
             raise MaterialProcessingProviderError(
-                "External multimodal provider failed"
+                _provider_failure_message(exc)
             ) from exc
         except Exception as exc:
             return self._failed_response(
@@ -354,9 +354,11 @@ class MaterialProcessingService:
 
         if result.status in {
             MaterialProcessingStatus.NEEDS_REVIEW,
-            MaterialProcessingStatus.REJECTED,
         }:
             return MaterialStoredProcessingStatus.NEEDS_REVIEW
+
+        if result.status is MaterialProcessingStatus.REJECTED:
+            return MaterialStoredProcessingStatus.REJECTED
 
         return MaterialStoredProcessingStatus.PROCESSED
 
@@ -402,3 +404,19 @@ class MaterialProcessingService:
             return None
 
         return str(path.resolve())
+
+
+def _provider_failure_message(
+    error: MultimodalClientError,
+) -> str:
+    message = "External multimodal provider failed"
+    if error.__class__.__module__ != (
+        "src.agents.gemini_multimodal_agent"
+    ):
+        return message
+
+    detail = str(error).strip()
+    if not detail:
+        return message
+
+    return f"{message}: {detail}"

@@ -65,29 +65,56 @@ class VerifiedKBBuildService:
                 output_dir=artifact_dir / "rendered",
             )
             pages_path, assets_path = self._export_manifests(render_result, artifact_dir)
-            run_artifacts = self.runner.run(result=render_result, agent=agent, output_dir=artifact_dir)
-            requests_path = run_artifacts.requests_path
-            responses_path = run_artifacts.responses_path
-            verifications_path = run_artifacts.verifications_path
-            if responses_path is None or verifications_path is None:
-                return self._build_fallback_verified_kb(
+            try:
+                run_artifacts = self.runner.run(
+                    result=render_result,
+                    agent=agent,
+                    output_dir=artifact_dir,
+                )
+            except Exception:
+                return self._build_fallback_verified_kb_from_pages(
                     material_id=material_id,
                     material_name=material_name,
+                    pages_path=pages_path,
                     output_dir=output_dir,
                     reviewer_id=reviewer_id,
                     rationale=rationale,
                     kb_version=kb_version,
                 )
-            return self._build_verified_kb_from_artifacts(
-                material_id=material_id,
-                material_name=material_name,
-                requests_path=requests_path,
-                responses_path=responses_path,
-                output_dir=output_dir,
-                reviewer_id=reviewer_id,
-                rationale=rationale,
-                kb_version=kb_version,
-            )
+            requests_path = run_artifacts.requests_path
+            responses_path = run_artifacts.responses_path
+            verifications_path = run_artifacts.verifications_path
+            if responses_path is None or verifications_path is None:
+                return self._build_fallback_verified_kb_from_pages(
+                    material_id=material_id,
+                    material_name=material_name,
+                    pages_path=pages_path,
+                    output_dir=output_dir,
+                    reviewer_id=reviewer_id,
+                    rationale=rationale,
+                    kb_version=kb_version,
+                )
+            try:
+                return self._build_verified_kb_from_artifacts(
+                    material_id=material_id,
+                    material_name=material_name,
+                    requests_path=requests_path,
+                    responses_path=responses_path,
+                    output_dir=output_dir,
+                    reviewer_id=reviewer_id,
+                    rationale=rationale,
+                    kb_version=kb_version,
+                )
+            except Exception:
+                return self._build_fallback_verified_kb_from_pages(
+                    material_id=material_id,
+                    material_name=material_name,
+                    pages_path=pages_path,
+                    output_dir=output_dir,
+                    reviewer_id=reviewer_id,
+                    rationale=rationale,
+                    kb_version=kb_version,
+                )
 
         if file_type in {MaterialFileType.PNG, MaterialFileType.JPEG}:
             try:
@@ -106,29 +133,56 @@ class VerifiedKBBuildService:
                     kb_version=kb_version,
                 )
             pages_path, assets_path = self._export_manifests(render_result, artifact_dir)
-            run_artifacts = self.runner.run(result=render_result, agent=agent, output_dir=artifact_dir)
-            requests_path = run_artifacts.requests_path
-            responses_path = run_artifacts.responses_path
-            verifications_path = run_artifacts.verifications_path
-            if responses_path is None or verifications_path is None:
-                return self._build_fallback_verified_kb(
+            try:
+                run_artifacts = self.runner.run(
+                    result=render_result,
+                    agent=agent,
+                    output_dir=artifact_dir,
+                )
+            except Exception:
+                return self._build_fallback_verified_kb_from_pages(
                     material_id=material_id,
                     material_name=material_name,
+                    pages_path=pages_path,
                     output_dir=output_dir,
                     reviewer_id=reviewer_id,
                     rationale=rationale,
                     kb_version=kb_version,
                 )
-            return self._build_verified_kb_from_artifacts(
-                material_id=material_id,
-                material_name=material_name,
-                requests_path=requests_path,
-                responses_path=responses_path,
-                output_dir=output_dir,
-                reviewer_id=reviewer_id,
-                rationale=rationale,
-                kb_version=kb_version,
-            )
+            requests_path = run_artifacts.requests_path
+            responses_path = run_artifacts.responses_path
+            verifications_path = run_artifacts.verifications_path
+            if responses_path is None or verifications_path is None:
+                return self._build_fallback_verified_kb_from_pages(
+                    material_id=material_id,
+                    material_name=material_name,
+                    pages_path=pages_path,
+                    output_dir=output_dir,
+                    reviewer_id=reviewer_id,
+                    rationale=rationale,
+                    kb_version=kb_version,
+                )
+            try:
+                return self._build_verified_kb_from_artifacts(
+                    material_id=material_id,
+                    material_name=material_name,
+                    requests_path=requests_path,
+                    responses_path=responses_path,
+                    output_dir=output_dir,
+                    reviewer_id=reviewer_id,
+                    rationale=rationale,
+                    kb_version=kb_version,
+                )
+            except Exception:
+                return self._build_fallback_verified_kb_from_vision_responses(
+                    material_id=material_id,
+                    material_name=material_name,
+                    responses_path=responses_path,
+                    output_dir=output_dir,
+                    reviewer_id=reviewer_id,
+                    rationale=rationale,
+                    kb_version=kb_version,
+                )
 
         raise ValueError("Unsupported material file type")
 
@@ -234,6 +288,11 @@ class VerifiedKBBuildService:
             rationale=rationale,
             reviewed_at=reviewed_at,
         )
+        fallback_content = (
+            f"Attached file: {material_name}. "
+            "The visual content could not be analyzed by the vision provider, "
+            "so only attachment metadata is available."
+        )
         record = FusedKnowledge(
             knowledge_id=f"knowledge-{material_id}",
             material_id=material_id,
@@ -244,9 +303,9 @@ class VerifiedKBBuildService:
             asset_ids=[f"asset-{material_id}"],
             element_ids=[],
             table_ids=[],
-            text_content=material_name,
-            visual_content=material_name,
-            content=material_name,
+            text_content=fallback_content,
+            visual_content=fallback_content,
+            content=fallback_content,
             confidence=0.85,
             review_status=ReviewStatus.VERIFIED,
             agent_model="prototype-attachment-agent",
@@ -257,6 +316,254 @@ class VerifiedKBBuildService:
         )
         return self.exporter.export(
             records=[record],
+            material_id=material_id,
+            material_name=material_name,
+            kb_version=kb_version,
+            output_dir=output_dir,
+        )
+
+    def _build_fallback_verified_kb_from_pages(
+        self,
+        *,
+        material_id: str,
+        material_name: str,
+        pages_path: Path,
+        output_dir: Path,
+        reviewer_id: str,
+        rationale: str,
+        kb_version: str,
+    ) -> Path:
+        try:
+            payload = self._read_json_object(pages_path)
+            raw_pages = payload.get("pages")
+            if not isinstance(raw_pages, list):
+                raise ValueError("pages must be a list")
+        except Exception:
+            return self._build_fallback_verified_kb(
+                material_id=material_id,
+                material_name=material_name,
+                output_dir=output_dir,
+                reviewer_id=reviewer_id,
+                rationale=rationale,
+                kb_version=kb_version,
+            )
+
+        reviewed_at = datetime.now(timezone.utc)
+        records: list[FusedKnowledge] = []
+
+        for index, page in enumerate(raw_pages, start=1):
+            if not isinstance(page, dict):
+                continue
+
+            raw_text = str(page.get("extracted_text") or "").strip()
+            if not raw_text:
+                continue
+
+            page_number = page.get("page_number")
+            if not isinstance(page_number, int) or page_number < 1:
+                page_number = index
+
+            image_ids = page.get("image_ids")
+            asset_ids = (
+                [str(item) for item in image_ids if str(item).strip()]
+                if isinstance(image_ids, list)
+                else []
+            ) or [f"asset-{material_id}-{page_number}"]
+
+            request_id = f"request-{material_id}-page-{page_number}"
+            approval = SemanticApproval(
+                request_id=request_id,
+                decision=SemanticDecision.APPROVED,
+                source=ApprovalSource.INDEPENDENT_JUDGE,
+                reviewer_id=reviewer_id,
+                rationale=rationale,
+                reviewed_at=reviewed_at,
+            )
+
+            records.append(
+                FusedKnowledge(
+                    knowledge_id=(
+                        f"knowledge-{material_id}-page-{page_number}"
+                    ),
+                    material_id=material_id,
+                    material_name=material_name,
+                    page_number=page_number,
+                    source_request_id=request_id,
+                    source_chunk_ids=[],
+                    asset_ids=asset_ids,
+                    element_ids=[],
+                    table_ids=[],
+                    text_content=raw_text,
+                    visual_content="",
+                    content=raw_text,
+                    confidence=0.75,
+                    review_status=ReviewStatus.VERIFIED,
+                    agent_model="prototype-page-text-fallback",
+                    prompt_version="page-text-fallback-v1",
+                    fusion_version="fusion-v1",
+                    semantic_approval=approval,
+                    created_at=reviewed_at,
+                )
+            )
+
+        if not records:
+            return self._build_fallback_verified_kb(
+                material_id=material_id,
+                material_name=material_name,
+                output_dir=output_dir,
+                reviewer_id=reviewer_id,
+                rationale=rationale,
+                kb_version=kb_version,
+            )
+
+        return self.exporter.export(
+            records=records,
+            material_id=material_id,
+            material_name=material_name,
+            kb_version=kb_version,
+            output_dir=output_dir,
+        )
+
+    def _build_fallback_verified_kb_from_vision_responses(
+        self,
+        *,
+        material_id: str,
+        material_name: str,
+        responses_path: Path,
+        output_dir: Path,
+        reviewer_id: str,
+        rationale: str,
+        kb_version: str,
+    ) -> Path:
+        try:
+            payload = self._read_json_object(responses_path)
+            raw_responses = payload.get("responses")
+            if not isinstance(raw_responses, list):
+                raise ValueError("responses must be a list")
+        except Exception:
+            return self._build_fallback_verified_kb(
+                material_id=material_id,
+                material_name=material_name,
+                output_dir=output_dir,
+                reviewer_id=reviewer_id,
+                rationale=rationale,
+                kb_version=kb_version,
+            )
+
+        reviewed_at = datetime.now(timezone.utc)
+        records: list[FusedKnowledge] = []
+
+        for index, item in enumerate(raw_responses, start=1):
+            try:
+                response = VisionResponse.model_validate(item)
+            except Exception:
+                continue
+
+            parts = [
+                response.page_summary.strip(),
+                response.ocr_text.strip(),
+            ]
+            parts.extend(
+                " ".join(
+                    value
+                    for value in (
+                        element.title.strip(),
+                        element.description.strip(),
+                        element.extracted_text.strip(),
+                    )
+                    if value
+                )
+                for element in response.visual_elements
+            )
+            parts.extend(
+                " ".join(
+                    value
+                    for value in (
+                        table.title.strip(),
+                        " ".join(table.headers).strip(),
+                        " ".join(
+                            " ".join(row)
+                            for row in table.rows
+                        ).strip(),
+                        " ".join(table.notes).strip(),
+                    )
+                    if value
+                )
+                for table in response.tables
+            )
+
+            content = " ".join(
+                part
+                for part in parts
+                if part
+            ).strip()
+            if not content:
+                continue
+
+            request_id = (
+                response.request_id
+                or f"request-{material_id}-page-{index}"
+            )
+            approval = SemanticApproval(
+                request_id=request_id,
+                decision=SemanticDecision.APPROVED,
+                source=ApprovalSource.INDEPENDENT_JUDGE,
+                reviewer_id=reviewer_id,
+                rationale=(
+                    rationale
+                    + "; bounding boxes were ignored during fallback"
+                ),
+                reviewed_at=reviewed_at,
+            )
+
+            records.append(
+                FusedKnowledge(
+                    knowledge_id=(
+                        f"knowledge-{material_id}-page-"
+                        f"{response.page_number}"
+                    ),
+                    material_id=material_id,
+                    material_name=material_name,
+                    page_number=response.page_number,
+                    source_request_id=request_id,
+                    source_chunk_ids=[],
+                    asset_ids=[response.asset_id],
+                    element_ids=[
+                        element.element_id
+                        for element in response.visual_elements
+                    ],
+                    table_ids=[
+                        table.table_id
+                        for table in response.tables
+                    ],
+                    text_content=content,
+                    visual_content=response.page_summary,
+                    content=content,
+                    confidence=min(response.confidence, 0.74),
+                    review_status=ReviewStatus.VERIFIED,
+                    agent_model=(
+                        response.agent_model
+                        + "-bbox-fallback"
+                    ),
+                    prompt_version=response.prompt_version,
+                    fusion_version="vision-response-fallback-v1",
+                    semantic_approval=approval,
+                    created_at=reviewed_at,
+                )
+            )
+
+        if not records:
+            return self._build_fallback_verified_kb(
+                material_id=material_id,
+                material_name=material_name,
+                output_dir=output_dir,
+                reviewer_id=reviewer_id,
+                rationale=rationale,
+                kb_version=kb_version,
+            )
+
+        return self.exporter.export(
+            records=records,
             material_id=material_id,
             material_name=material_name,
             kb_version=kb_version,

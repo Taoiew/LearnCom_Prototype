@@ -25,6 +25,9 @@ class GroundingValidationResult:
 
 
 class GroundingValidator:
+    BOUNDING_BOX_PIXEL_TOLERANCE = 32
+    BOUNDING_BOX_RELATIVE_TOLERANCE = 0.05
+
     def __init__(
         self,
         minimum_evidence_confidence: float = 0.70,
@@ -175,10 +178,14 @@ class GroundingValidator:
         response: VisionResponse,
         reasons: list[str],
     ) -> None:
-        element_ids = {
+        evidence_ids = {
             element.element_id
             for element in response.visual_elements
         }
+        evidence_ids.update(
+            table.table_id
+            for table in response.tables
+        )
 
         for index, relationship in enumerate(
             response.relationships
@@ -187,7 +194,7 @@ class GroundingValidator:
 
             if (
                 relationship.source_element_id
-                not in element_ids
+                not in evidence_ids
             ):
                 reasons.append(
                     "Relationship "
@@ -198,7 +205,7 @@ class GroundingValidator:
 
             if (
                 relationship.target_element_id
-                not in element_ids
+                not in evidence_ids
             ):
                 reasons.append(
                     "Relationship "
@@ -238,14 +245,18 @@ class GroundingValidator:
 
             _, _, x2, y2 = bounding_box
 
-            if x2 > image_width_pixels:
+            if x2 > GroundingValidator._max_allowed_bound(
+                image_width_pixels
+            ):
                 reasons.append(
                     "Visual element bounding_box exceeds "
                     "image width: "
                     f"{element.element_id}"
                 )
 
-            if y2 > image_height_pixels:
+            if y2 > GroundingValidator._max_allowed_bound(
+                image_height_pixels
+            ):
                 reasons.append(
                     "Visual element bounding_box exceeds "
                     "image height: "
@@ -264,17 +275,31 @@ class GroundingValidator:
 
             _, _, x2, y2 = bounding_box
 
-            if x2 > image_width_pixels:
+            if x2 > GroundingValidator._max_allowed_bound(
+                image_width_pixels
+            ):
                 reasons.append(
                     "Table bounding_box exceeds image width: "
                     f"{table.table_id}"
                 )
 
-            if y2 > image_height_pixels:
+            if y2 > GroundingValidator._max_allowed_bound(
+                image_height_pixels
+            ):
                 reasons.append(
                     "Table bounding_box exceeds image height: "
                     f"{table.table_id}"
                 )
+
+    @staticmethod
+    def _max_allowed_bound(
+        image_pixels: int,
+    ) -> float:
+        return image_pixels + max(
+            GroundingValidator.BOUNDING_BOX_PIXEL_TOLERANCE,
+            image_pixels
+            * GroundingValidator.BOUNDING_BOX_RELATIVE_TOLERANCE,
+        )
 
     def _check_ocr_grounding(
         self,

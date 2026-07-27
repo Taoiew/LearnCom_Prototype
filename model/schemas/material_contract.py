@@ -18,6 +18,7 @@ class MaterialStoredProcessingStatus(str, Enum):
     PROCESSING = "processing"
     PROCESSED = "processed"
     NEEDS_REVIEW = "needs_review"
+    REJECTED = "rejected"
     FAILED = "failed"
 
 

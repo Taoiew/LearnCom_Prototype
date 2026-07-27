@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -59,7 +60,7 @@ class ConversationAttachmentService:
         build_service: VerifiedKBBuildService | None = None,
         ttl_hours: int | None = None,
     ) -> None:
-        self.base_dir = Path(base_dir)
+        self.base_dir = self._normalize_base_dir(base_dir)
         self.conversation_store = conversation_store
         self.storage = storage or MaterialStorage(storage_root=self.base_dir / "stored")
         self.build_service = build_service or VerifiedKBBuildService()
@@ -68,6 +69,16 @@ class ConversationAttachmentService:
         self._records: dict[str, AttachmentRecord] = {}
         self._status_dir = self.base_dir / "status"
         self._status_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _normalize_base_dir(base_dir: str | Path) -> Path:
+        path = Path(base_dir)
+        if os.name == "nt":
+            raw_value = str(base_dir).replace("\\", "/")
+            if raw_value == "/tmp" or raw_value.startswith("/tmp/"):
+                suffix = raw_value.removeprefix("/tmp").lstrip("/")
+                return Path(tempfile.gettempdir()) / suffix
+        return path
 
     def upload_attachment(
         self,
@@ -79,6 +90,8 @@ class ConversationAttachmentService:
         filename: str,
         content_type: str,
         content: bytes,
+        agent: MultimodalAgent | None = None,
+        auto_process: bool = True,
     ) -> ChatAttachmentUploadResponse:
         self._validate_scope(student_id, conversation_id, course_id, class_session_id)
         self._validate_file(filename, content_type, content)
@@ -112,8 +125,17 @@ class ConversationAttachmentService:
             self._records[attachment_id] = record
             self._persist_status(record)
 
+        if self._activate_existing_verified_kb(record):
+            return self._to_upload_response(record)
+
+        if not auto_process:
+            return self._to_upload_response(record)
+
         try:
-            processed = self.process_attachment(attachment_id=attachment_id)
+            processed = self.process_attachment(
+                attachment_id=attachment_id,
+                agent=agent,
+            )
         except Exception:
             return self._to_upload_response(record)
 
@@ -130,6 +152,33 @@ class ConversationAttachmentService:
             size_bytes=record.size_bytes,
             processing_status=processed.processing_status,
         )
+
+    def _activate_existing_verified_kb(
+        self,
+        record: AttachmentRecord,
+    ) -> bool:
+        verified_kb_path = (
+            Path(record.storage_dir)
+            / "verified_kb"
+            / "verified_kb.json"
+        )
+        if not verified_kb_path.is_file():
+            return False
+
+        try:
+            self.conversation_store.activate_attachment(
+                student_id=record.student_id,
+                conversation_id=record.conversation_id,
+                verified_kb_path=verified_kb_path,
+            )
+        except Exception:
+            return False
+
+        record.verified_kb_path = str(verified_kb_path)
+        record.processing_status = AttachmentProcessingStatus.READY
+        record.error_message = None
+        self._persist_status(record)
+        return True
 
     def process_attachment(
         self,

@@ -1,4 +1,5 @@
 ﻿import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -313,6 +314,228 @@ class DemoAnswerAgent:
         )
 
 
+class ExtractiveAnswerAgent:
+    _PDF_THAI_GLYPH_MAP = str.maketrans(
+        {
+            "\uf701": "ิ",
+            "\uf702": "ี",
+            "\uf703": "ึ",
+            "\uf705": "่",
+            "\uf706": "้",
+            "\uf70a": "่",
+            "\uf70b": "้",
+            "\uf70e": "์",
+            "\uf710": "ั",
+            "\uf712": "็",
+        }
+    )
+    _NOISE_PATTERNS = (
+        re.compile(
+            r"©\s*\d{4}.*?All rights reserved\.?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"©\s*\d{4}[^.]{0,120}(?:reserved\.?)?",
+            re.IGNORECASE,
+        ),
+        re.compile(r"\bAll rights reserved\.?", re.IGNORECASE),
+        re.compile(
+            r"\bAmazon Web Services, Inc\.?\s+or its affiliates\.?",
+            re.IGNORECASE,
+        ),
+    )
+
+    def answer(
+        self,
+        question: str,
+        phase: LearningPhase,
+        retrieved_chunks,
+    ) -> AnswerDraft:
+        excerpts = []
+        reference_pages: list[int | None] = []
+        prefers_thai = self._prefers_thai(question)
+
+        for result in retrieved_chunks[:3]:
+            text = self._clean_excerpt(result.chunk.text)
+            if not text:
+                continue
+            excerpts.append(text)
+            reference_pages.append(result.chunk.page_number)
+
+        if not excerpts:
+            answer = self._empty_answer(
+                prefers_thai=prefers_thai,
+            )
+        elif phase == LearningPhase.PRE_CLASS:
+            answer = self._pre_class_answer(
+                excerpts=excerpts,
+                reference_pages=reference_pages,
+                prefers_thai=prefers_thai,
+            )
+        else:
+            answer = self._in_class_answer(
+                excerpts=excerpts,
+                reference_pages=reference_pages,
+                prefers_thai=prefers_thai,
+            )
+
+        grounded_chunk_ids = tuple(
+            result.chunk.chunk_id
+            for result in retrieved_chunks
+        )
+
+        return AnswerDraft(
+            answer=answer,
+            confidence=0.80,
+            learning_signals=[],
+            grounded_chunk_ids=grounded_chunk_ids,
+        )
+
+    @classmethod
+    def _clean_excerpt(cls, text: str) -> str:
+        cleaned = cls._normalize_pdf_text(text)
+        cleaned = " ".join(cleaned.strip().split())
+        for pattern in cls._NOISE_PATTERNS:
+            cleaned = pattern.sub("", cleaned)
+
+        cleaned = cleaned.replace("•", " - ")
+        cleaned = re.sub(r"\s*-\s*", " - ", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -")
+
+        if not cleaned:
+            return ""
+
+        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+        useful_sentences: list[str] = []
+        for sentence in sentences:
+            sentence = sentence.strip(" -")
+            if not sentence:
+                continue
+            lower = sentence.lower()
+            if (
+                "rights reserved" in lower
+                or "amazon web services, inc" in lower
+            ):
+                continue
+            useful_sentences.append(sentence)
+            if len(useful_sentences) >= 2:
+                break
+
+        if useful_sentences:
+            cleaned = " ".join(useful_sentences)
+
+        if len(cleaned) > 260:
+            cleaned = cleaned[:257].rstrip(" ,;:-") + "..."
+
+        return cleaned
+
+    @classmethod
+    def _normalize_pdf_text(cls, text: str) -> str:
+        return text.translate(cls._PDF_THAI_GLYPH_MAP)
+
+    @staticmethod
+    def _prefers_thai(question: str) -> bool:
+        return bool(re.search(r"[\u0e00-\u0e7f]", question))
+
+    @classmethod
+    def _empty_answer(cls, *, prefers_thai: bool) -> str:
+        if prefers_thai:
+            return (
+                "พบไฟล์ประกอบการเรียนแล้ว แต่ยังไม่มีข้อความที่อ่านได้"
+                "มากพอสำหรับตอบคำถามนี้"
+            )
+
+        return (
+            "I found the material entry, but it does "
+            "not contain enough readable text to answer."
+        )
+
+    @classmethod
+    def _pre_class_answer(
+        cls,
+        *,
+        excerpts: list[str],
+        reference_pages: list[int | None],
+        prefers_thai: bool,
+    ) -> str:
+        if prefers_thai:
+            return (
+                "จากเอกสารที่อัปโหลด เซสชันนี้เกี่ยวกับ:\n"
+                "- "
+                + "\n- ".join(excerpts)
+                + "\n\nก่อนเข้าเรียน ลองสรุปใจความหลักด้วยคำของตัวเอง "
+                "แล้วถามต่อในจุดที่ยังไม่ชัดเจนได้เลย"
+                + cls._format_references(
+                    reference_pages,
+                    prefers_thai=prefers_thai,
+                )
+            )
+
+        return (
+            "From the uploaded material, this session is "
+            "about:\n- "
+            + "\n- ".join(excerpts)
+            + "\n\nBefore class, try explaining the key idea "
+            "in your own words, then ask me about any part "
+            "that feels unclear."
+            + cls._format_references(
+                reference_pages,
+                prefers_thai=prefers_thai,
+            )
+        )
+
+    @classmethod
+    def _in_class_answer(
+        cls,
+        *,
+        excerpts: list[str],
+        reference_pages: list[int | None],
+        prefers_thai: bool,
+    ) -> str:
+        if prefers_thai:
+            return (
+                "อ้างอิงจากเอกสารที่อัปโหลด:\n- "
+                + "\n- ".join(excerpts)
+                + cls._format_references(
+                    reference_pages,
+                    prefers_thai=prefers_thai,
+                )
+            )
+
+        return (
+            "Based on the uploaded material:\n- "
+            + "\n- ".join(excerpts)
+            + cls._format_references(
+                reference_pages,
+                prefers_thai=prefers_thai,
+            )
+        )
+
+    @staticmethod
+    def _format_references(
+        pages: list[int | None],
+        *,
+        prefers_thai: bool,
+    ) -> str:
+        ordered_pages: list[int] = []
+        seen_pages: set[int] = set()
+
+        for page in pages:
+            if page is None or page in seen_pages:
+                continue
+            seen_pages.add(page)
+            ordered_pages.append(page)
+
+        if not ordered_pages:
+            return ""
+
+        refs = ", ".join(str(page) for page in ordered_pages)
+        if prefers_thai:
+            return f"\n\nอ้างอิง: หน้า {refs}"
+
+        return f"\n\nReferences: pages {refs}."
+
+
 def build_pipeline(
     config: ModelRuntimeConfig,
     llm_client: JSONChatClient | None = None,
@@ -325,6 +548,37 @@ def build_pipeline(
         material_threshold=config.material_threshold,
         course_threshold=config.course_threshold,
     )
+
+    if (
+        config.mode == "demo"
+        and (
+            course_store is not None
+            or conversation_store is not None
+        )
+    ):
+        resolved_course_store = (
+            course_store
+            if course_store is not None
+            else CourseKnowledgeStore()
+        )
+
+        resolved_conversation_store = (
+            conversation_store
+            if conversation_store is not None
+            else ConversationKnowledgeStore()
+        )
+
+        return LearningCompanionPipeline(
+            retriever=MergedKnowledgeRetriever(
+                course_store=resolved_course_store,
+                conversation_store=(
+                    resolved_conversation_store
+                ),
+            ),
+            scope_router=scope_router,
+            material_answer_agent=ExtractiveAnswerAgent(),
+            top_k=config.top_k,
+        )
 
     if config.mode == "demo":
         demo_chunk = MaterialChunk(

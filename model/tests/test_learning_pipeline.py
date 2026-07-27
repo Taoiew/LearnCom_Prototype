@@ -207,3 +207,54 @@ def test_pipeline_supports_request_scoped_retriever():
 
     assert retriever.received_request == request
     assert response.scope.value == "unrelated"
+
+
+def test_pipeline_treats_conversation_attachment_as_material_context():
+    chunk = MaterialChunk(
+        chunk_id="attachment-knowledge-001",
+        material_id="attachment-material",
+        material_name="slide.png",
+        page_number=1,
+        chunk_index=0,
+        text=(
+            "The slide compares traditional IT with AWS "
+            "cloud services."
+        ),
+        image_ids=("conversation_attachment",),
+    )
+
+    pipeline = LearningCompanionPipeline(
+        retriever=FakeRequestScopedRetriever(
+            [
+                type(
+                    "Retrieved",
+                    (),
+                    {
+                        "chunk": chunk,
+                        "score": 0.01,
+                    },
+                )()
+            ]
+        ),
+        scope_router=ScopeRouter(
+            material_threshold=0.10,
+            course_threshold=0.60,
+        ),
+        material_answer_agent=FakeAnswerAgent(),
+    )
+
+    response = pipeline.run(
+        request=ChatRequest(
+            student_id="student-one",
+            course_id="CS242",
+            class_session_id="week-07",
+            phase=LearningPhase.DURING_CLASS,
+            question="What does this slide convey?",
+            conversation_id="conversation-one",
+        ),
+        course_relevance_score=0.90,
+        unsafe=False,
+    )
+
+    assert response.scope == ScopeDecision.IN_MATERIAL
+    assert response.used_external_agent is False

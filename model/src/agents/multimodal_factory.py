@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import httpx
 
@@ -8,9 +9,16 @@ from src.agents.multimodal_agent import (
     ExternalMultimodalAgent,
     MultimodalAgent,
 )
-from src.agents.multimodal_client import (
-    MultimodalConfig,
-    OpenAICompatibleMultimodalClient,
+from src.agents.gemini_multimodal_agent import (
+    GeminiMultimodalClient,
+    GeminiMultimodalConfig,
+)
+
+
+GEMINI_PROMPT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "prompts"
+    / "gemini_multimodal_extraction_v1.txt"
 )
 
 
@@ -29,14 +37,14 @@ def multimodal_agent_context(
         yield DemoMultimodalAgent()
         return
 
-    if normalized_mode != "external":
+    if normalized_mode not in {"external", "gemini"}:
         raise ValueError(
             f"Unsupported multimodal agent mode: {mode}"
         )
 
-    config = MultimodalConfig.from_env()
+    config = GeminiMultimodalConfig.from_env()
 
-    client = OpenAICompatibleMultimodalClient(
+    client = GeminiMultimodalClient(
         config=config,
         http_client=http_client,
     )
@@ -45,6 +53,11 @@ def multimodal_agent_context(
         yield ExternalMultimodalAgent(
             client=client,
             agent_model=config.model,
+            system_prompt=_load_gemini_prompt(),
         )
     finally:
         client.close()
+
+
+def _load_gemini_prompt() -> str:
+    return GEMINI_PROMPT_PATH.read_text(encoding="utf-8").strip()

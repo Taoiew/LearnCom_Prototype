@@ -64,6 +64,30 @@ class RecordingMultimodalAgent(MultimodalAgent):
         )
 
 
+class FailedMultimodalAgent(MultimodalAgent):
+    def analyze(
+        self,
+        request: VisionRequest,
+    ) -> VisionResponse:
+        return VisionResponse(
+            request_id=request.request_id,
+            material_id=request.material_id,
+            material_name=request.material_name,
+            page_number=request.page_number,
+            asset_id=request.asset_id,
+            status=VisionResponseStatus.FAILED,
+            page_summary="Provider could not analyze this page.",
+            ocr_text="",
+            visual_elements=[],
+            tables=[],
+            relationships=[],
+            warnings=[],
+            confidence=0.0,
+            agent_model="fake-vision-model",
+            prompt_version=request.prompt_version,
+        )
+
+
 def create_visual_pdf_bytes() -> bytes:
     with fitz.open() as document:
         page = document.new_page()
@@ -544,3 +568,29 @@ def test_persists_processing_status_across_service_instances(
     assert loaded_status == final_status
     assert loaded_status.total_pages == 1
     assert loaded_status.total_assets == 1
+
+
+def test_persists_rejected_processing_status(
+    tmp_path: Path,
+) -> None:
+    storage, material_id = store_pdf(
+        tmp_path,
+        create_visual_pdf_bytes(),
+    )
+    service = create_service(
+        storage,
+        tmp_path / "work",
+    )
+
+    result = service.process(
+        material_id,
+        agent=FailedMultimodalAgent(),
+    )
+    final_status = service.persist_result(result)
+
+    assert result.status is MaterialProcessingStatus.REJECTED
+    assert (
+        final_status.processing_status
+        is MaterialStoredProcessingStatus.REJECTED
+    )
+    assert final_status.rejected_count == 1

@@ -23,6 +23,7 @@ class SourceType(str, Enum):
     VISION = "vision"
     MIXED = "mixed"
 
+
 class AssetType(str, Enum):
     PAGE_RENDER = "page_render"
     EMBEDDED_IMAGE = "embedded_image"
@@ -30,6 +31,7 @@ class AssetType(str, Enum):
     CHART = "chart"
     TABLE = "table"
     EQUATION = "equation"
+
 
 @dataclass(frozen=True)
 class PageAsset:
@@ -45,7 +47,9 @@ class PageAsset:
     width_pixels: int
     height_pixels: int
 
-    bounding_box: tuple[float, float, float, float] | None = None
+    bounding_box: (
+        tuple[float, float, float, float] | None
+    ) = None
 
 
 @dataclass(frozen=True)
@@ -60,10 +64,12 @@ class MaterialPage:
     has_visual_content: bool = False
     requires_vision: bool = False
 
+
 @dataclass(frozen=True)
 class PageRenderResult:
     pages: tuple[MaterialPage, ...]
     assets: tuple[PageAsset, ...]
+
 
 @dataclass(frozen=True)
 class MaterialChunk:
@@ -89,15 +95,21 @@ class PDFIngestor:
         chunk_size: int = 1000,
         overlap: int = 150,
         render_dpi: int = 150,
-    ):
+    ) -> None:
         if chunk_size <= 0:
-            raise ValueError("chunk_size must be greater than zero")
+            raise ValueError(
+                "chunk_size must be greater than zero"
+            )
 
         if overlap < 0 or overlap >= chunk_size:
-            raise ValueError("overlap must be between 0 and chunk_size")
+            raise ValueError(
+                "overlap must be between 0 and chunk_size"
+            )
 
         if render_dpi <= 0:
-            raise ValueError("render_dpi must be greater than zero")
+            raise ValueError(
+                "render_dpi must be greater than zero"
+            )
 
         self.chunk_size = chunk_size
         self.overlap = overlap
@@ -114,14 +126,18 @@ class PDFIngestor:
 
         with fitz.open(path) as document:
             for page_index, page in enumerate(document):
-                text = self._clean_text(page.get_text("text"))
+                text = self._clean_text(
+                    page.get_text("text")
+                )
 
                 if not text:
                     continue
 
                 page_chunks = self._split_text(text)
 
-                for chunk_index, chunk_text in enumerate(page_chunks):
+                for chunk_index, chunk_text in enumerate(
+                    page_chunks
+                ):
                     chunk_id = self._create_chunk_id(
                         material_id=material_id,
                         page_number=page_index + 1,
@@ -152,7 +168,8 @@ class PDFIngestor:
         Backward-compatible page rendering interface.
 
         Existing callers continue receiving list[MaterialPage].
-        Use render_pages_with_assets() when PageAsset records are needed.
+        Use render_pages_with_assets() when PageAsset records
+        are needed.
         """
         result = self.render_pages_with_assets(
             pdf_path=pdf_path,
@@ -169,17 +186,29 @@ class PDFIngestor:
         output_dir: str | Path,
     ) -> PageRenderResult:
         """
-        Render every PDF page and return linked pages and page assets.
+        Render every PDF page and return linked pages
+        and page assets.
         """
         path = self._validate_pdf_path(pdf_path)
 
         if not material_id.strip():
-            raise ValueError("material_id must not be empty")
+            raise ValueError(
+                "material_id must not be empty"
+            )
 
         output_root = Path(output_dir)
-        safe_material_id = self._sanitize_path_component(material_id)
-        material_output_dir = output_root / safe_material_id
-        material_output_dir.mkdir(parents=True, exist_ok=True)
+        safe_material_id = self._sanitize_path_component(
+            material_id
+        )
+
+        material_output_dir = (
+            output_root / safe_material_id
+        )
+
+        material_output_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
         rendered_pages: list[MaterialPage] = []
         page_assets: list[PageAsset] = []
@@ -189,22 +218,35 @@ class PDFIngestor:
                 page_number = page_index + 1
 
                 image_path = (
-                    material_output_dir / f"page-{page_number:04d}.png"
+                    material_output_dir
+                    / f"page-{page_number:04d}.png"
                 )
 
                 pixmap = page.get_pixmap(
                     dpi=self.render_dpi,
                     alpha=False,
                 )
+
                 pixmap.save(str(image_path))
 
-                resolved_image_path = str(image_path.resolve())
+                resolved_image_path = str(
+                    image_path.resolve()
+                )
 
                 extracted_text = self._clean_text(
                     page.get_text("text")
                 )
 
-                has_visual_content = self._has_visual_content(page)
+                has_visual_content = (
+                    self._has_visual_content(page)
+                )
+
+                requires_vision = self._requires_vision(
+                    extracted_text=extracted_text,
+                    has_visual_content=(
+                        has_visual_content
+                    ),
+                )
 
                 asset_id = self._create_asset_id(
                     material_id=material_id,
@@ -229,10 +271,14 @@ class PDFIngestor:
                     material_name=path.name,
                     page_number=page_number,
                     extracted_text=extracted_text,
-                    rendered_image_path=resolved_image_path,
+                    rendered_image_path=(
+                        resolved_image_path
+                    ),
                     image_ids=(asset_id,),
-                    has_visual_content=has_visual_content,
-                    requires_vision=has_visual_content,
+                    has_visual_content=(
+                        has_visual_content
+                    ),
+                    requires_vision=requires_vision,
                 )
 
                 page_assets.append(page_asset)
@@ -242,15 +288,19 @@ class PDFIngestor:
             pages=tuple(rendered_pages),
             assets=tuple(page_assets),
         )
-    
-    @staticmethod
-    def _has_visual_content(page: fitz.Page) -> bool:
-        """
-        Detect whether a PDF page contains visual information.
 
-        Embedded images cover scanned pages and raster illustrations.
-        Vector drawings cover shapes, chart lines, table borders, arrows,
-        and flowchart components.
+    @staticmethod
+    def _has_visual_content(
+        page: fitz.Page,
+    ) -> bool:
+        """
+        Detect whether a PDF page contains visual
+        information.
+
+        Embedded images cover scanned pages and raster
+        illustrations. Vector drawings cover shapes,
+        chart lines, table borders, arrows, and flowchart
+        components.
         """
         embedded_images = page.get_images(full=True)
 
@@ -265,57 +315,147 @@ class PDFIngestor:
         return False
 
     @staticmethod
-    def _validate_pdf_path(pdf_path: str | Path) -> Path:
+    def _requires_vision(
+        *,
+        extracted_text: str,
+        has_visual_content: bool,
+    ) -> bool:
+        """
+        Decide whether the rendered page should be sent
+        to the multimodal provider.
+
+        Vision is required when:
+        - the page contains images or vector drawings
+        - no usable text was extracted
+        - the text contains Unicode replacement characters
+        - the text contains several Unicode private-use
+          glyphs, which commonly indicates broken Thai
+          font extraction
+        """
+        if has_visual_content:
+            return True
+
+        normalized_text = extracted_text.strip()
+
+        if not normalized_text:
+            return True
+
+        replacement_count = normalized_text.count(
+            "\ufffd"
+        )
+
+        private_use_count = sum(
+            1
+            for character in normalized_text
+            if "\ue000" <= character <= "\uf8ff"
+        )
+
+        suspicious_count = (
+            replacement_count
+            + private_use_count
+        )
+
+        suspicious_ratio = (
+            suspicious_count
+            / len(normalized_text)
+        )
+
+        if replacement_count > 0:
+            return True
+
+        if private_use_count >= 3:
+            return True
+
+        if suspicious_ratio >= 0.01:
+            return True
+
+        return False
+
+    @staticmethod
+    def _validate_pdf_path(
+        pdf_path: str | Path,
+    ) -> Path:
         path = Path(pdf_path)
 
         if not path.exists():
-            raise FileNotFoundError(f"PDF not found: {path}")
+            raise FileNotFoundError(
+                f"PDF not found: {path}"
+            )
 
         if not path.is_file():
-            raise ValueError(f"PDF path is not a file: {path}")
+            raise ValueError(
+                f"PDF path is not a file: {path}"
+            )
 
         if path.suffix.lower() != ".pdf":
-            raise ValueError(f"Expected a PDF file: {path}")
+            raise ValueError(
+                f"Expected a PDF file: {path}"
+            )
 
         return path
 
     @staticmethod
-    def _sanitize_path_component(value: str) -> str:
+    def _sanitize_path_component(
+        value: str,
+    ) -> str:
         """
         Convert material_id into a safe directory name.
 
         Example:
             "cloud/class 01" -> "cloud-class-01"
         """
-        sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip())
+        sanitized = re.sub(
+            r"[^a-zA-Z0-9._-]+",
+            "-",
+            value.strip(),
+        )
+
         sanitized = sanitized.strip(".-_")
 
         if not sanitized:
             raise ValueError(
-                "material_id must contain at least one valid character"
+                "material_id must contain at least "
+                "one valid character"
             )
 
         return sanitized
 
     @staticmethod
     def _clean_text(text: str) -> str:
-        return re.sub(r"\s+", " ", text).strip()
+        return re.sub(
+            r"\s+",
+            " ",
+            text,
+        ).strip()
 
-    def _split_text(self, text: str) -> list[str]:
+    def _split_text(
+        self,
+        text: str,
+    ) -> list[str]:
         chunks: list[str] = []
         start = 0
 
         while start < len(text):
-            end = min(start + self.chunk_size, len(text))
-            chunks.append(text[start:end].strip())
+            end = min(
+                start + self.chunk_size,
+                len(text),
+            )
+
+            chunks.append(
+                text[start:end].strip()
+            )
 
             if end == len(text):
                 break
 
             start = end - self.overlap
 
-        return [chunk for chunk in chunks if chunk]
-    
+        return [
+            chunk
+            for chunk in chunks
+            if chunk
+        ]
+
     @staticmethod
     def _create_asset_id(
         material_id: str,
@@ -327,6 +467,7 @@ class PDFIngestor:
             f"{page_number}:"
             f"{asset_type.value}"
         )
+
         digest = hashlib.sha256(
             source.encode("utf-8")
         ).hexdigest()[:16]
@@ -340,6 +481,15 @@ class PDFIngestor:
         chunk_index: int,
         text: str,
     ) -> str:
-        source = f"{material_id}:{page_number}:{chunk_index}:{text}"
-        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+        source = (
+            f"{material_id}:"
+            f"{page_number}:"
+            f"{chunk_index}:"
+            f"{text}"
+        )
+
+        digest = hashlib.sha256(
+            source.encode("utf-8")
+        ).hexdigest()[:16]
+
         return f"chunk-{digest}"

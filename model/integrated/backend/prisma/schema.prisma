@@ -1,0 +1,401 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+
+// ============== ENUMS ==============
+
+enum Role {
+  STUDENT
+  TEACHER
+}
+
+enum SessionStatus {
+  UPCOMING
+  ACTIVE
+  COMPLETED
+}
+
+enum Phase {
+  BEFORE
+  DURING
+  AFTER
+}
+
+enum MessageRole {
+  STUDENT
+  AGENT
+}
+
+enum QuestionType {
+  DIRECT
+  SCENARIO
+  REASONING
+  EDGE_CASE
+  REAL_WORLD
+}
+
+enum Readiness {
+  READY
+  PARTIAL
+  NOT_READY
+}
+
+enum CriteriaStatus {
+  MET
+  PARTIAL
+  NOT_MET
+}
+
+enum AnswerReferenceSourceType {
+  MATERIAL
+  EXTERNAL_AI
+}
+
+// ============== TABLES ==============
+
+// 1. Users
+model User {
+  id          String   @id @default(cuid())
+  name        String
+  email       String   @unique
+  password    String
+  role        Role     @default(STUDENT)
+  language    String   @default("en")
+  createdAt   DateTime @default(now())
+
+  // Relations
+  subjects         Subject[]
+  conversations    Conversation[]
+  messages         Message[]
+  quizzes          Quiz[]
+  duringClassLogs  DuringClassLog[]
+  studentReports   StudentReport[]
+  trainingData     TrainingData[]
+  chatImageLogs ChatImageLog[]
+  attendances      Attendance[]
+  answerReferences AnswerReference[]
+}
+
+// 2. Subjects
+model Subject {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  teacherId   String
+  createdAt   DateTime @default(now())
+
+  // Relations
+  teacher          User               @relation(fields: [teacherId], references: [id])
+  semesterCriteria SemesterCriteria[]
+  sessions         ClassSession[]
+  weeklySummaries  WeeklySummary[]
+}
+
+// 3. Semester Criteria
+model SemesterCriteria {
+  id          String   @id @default(cuid())
+  subjectId   String
+  description String
+  goal        String
+  order       Int
+  createdAt   DateTime @default(now())
+
+  // Relations
+  subject          Subject           @relation(fields: [subjectId], references: [id])
+  sessionCriteria  SessionCriteria[]
+}
+
+// 4. Class Sessions
+model ClassSession {
+  id          String        @id @default(cuid())
+  subjectId   String
+  title       String
+  description String?
+  date        DateTime
+  durationMinutes Int     @default(180)
+  status      SessionStatus @default(UPCOMING)
+  phase       Phase         @default(BEFORE)
+  createdAt   DateTime      @default(now())
+
+  // Relations
+  subject          Subject          @relation(fields: [subjectId], references: [id])
+  sessionCriteria  SessionCriteria[]
+  materials        Material[]
+  conversations    Conversation[]
+  quizzes          Quiz[]
+  duringClassLogs  DuringClassLog[]
+  sessionReport    SessionReport?
+  trainingData     TrainingData[]
+  chatImageLogs ChatImageLog[]
+  attendances      Attendance[]
+  answerReferences AnswerReference[]
+}
+
+// 5. Session Criteria
+model SessionCriteria {
+  id                 String            @id @default(cuid())
+  sessionId          String
+  semesterCriteriaId String?
+  description        String
+  goal               String
+  order              Int
+
+  // Relations
+  session            ClassSession      @relation(fields: [sessionId], references: [id])
+  semesterCriteria   SemesterCriteria? @relation(fields: [semesterCriteriaId], references: [id])
+  quizQuestions      QuizQuestion[]
+  criteriaResults    CriteriaResult[]
+  duringClassLogs    DuringClassLog[]
+}
+
+// 6. Materials
+model Material {
+  id          String   @id @default(cuid())
+  sessionId   String
+  fileName    String
+  fileUrl     String
+  fileType    String
+  isProcessed Boolean  @default(false)
+  uploadedAt  DateTime @default(now())
+
+  // Relations
+  session     ClassSession @relation(fields: [sessionId], references: [id])
+  chatImageLogs ChatImageLog[]
+}
+
+// 7. Conversations
+model Conversation {
+  id        String    @id @default(cuid())
+  studentId String
+  sessionId String
+  phase     Phase
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  // Relations
+  student   User                 @relation(fields: [studentId], references: [id])
+  session   ClassSession         @relation(fields: [sessionId], references: [id])
+  messages  Message[]
+  summary   ConversationSummary?
+}
+
+// 8. Messages
+model Message {
+  id             String      @id @default(cuid())
+  conversationId String
+  studentId      String
+  role           MessageRole
+  content        String
+  createdAt      DateTime    @default(now())
+
+  // Relations
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  student        User         @relation(fields: [studentId], references: [id])
+  answerReferences AnswerReference[]
+}
+
+// 9. Conversation Summary
+model ConversationSummary {
+  id             String   @id @default(cuid())
+  conversationId String   @unique
+  summary        String
+  messageCount   Int      @default(0)
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+}
+
+// 10. Quizzes
+model Quiz {
+  id         String    @id @default(cuid())
+  studentId  String
+  sessionId  String
+  phase      Phase
+  totalScore Float     @default(0)
+  readiness  Readiness @default(NOT_READY)
+  takenAt    DateTime  @default(now())
+
+  // Relations
+  student         User             @relation(fields: [studentId], references: [id])
+  session         ClassSession     @relation(fields: [sessionId], references: [id])
+  questions       QuizQuestion[]
+  criteriaResults CriteriaResult[]
+}
+
+// 11. Quiz Questions
+model QuizQuestion {
+  id             String       @id @default(cuid())
+  quizId         String
+  criteriaId     String
+  questionText   String
+  questionType   QuestionType
+  options        Json?
+  correctConcept String
+  studentAnswer  String?
+  score          Float?
+  feedback       String?
+  order          Int
+
+  // Relations
+  quiz           Quiz            @relation(fields: [quizId], references: [id])
+  criteria       SessionCriteria @relation(fields: [criteriaId], references: [id])
+}
+
+// 12. Criteria Results
+model CriteriaResult {
+  id         String         @id @default(cuid())
+  quizId     String
+  criteriaId String
+  status     CriteriaStatus
+  evidence   String
+
+  // Relations
+  quiz       Quiz            @relation(fields: [quizId], references: [id])
+  criteria   SessionCriteria @relation(fields: [criteriaId], references: [id])
+}
+
+// 13. During Class Logs
+model DuringClassLog {
+  id         String   @id @default(cuid())
+  studentId  String
+  sessionId  String
+  criteriaId String?
+  question   String
+  answer     String
+  askedAt    DateTime @default(now())
+
+  // Relations
+  student    User             @relation(fields: [studentId], references: [id])
+  session    ClassSession     @relation(fields: [sessionId], references: [id])
+  criteria   SessionCriteria? @relation(fields: [criteriaId], references: [id])
+}
+
+// 14. Session Reports
+model SessionReport {
+  id              String   @id @default(cuid())
+  sessionId       String   @unique
+  avgReadiness    Float
+  weakCriteria    Json
+  mostAskedTopics Json
+  aiInsight       String
+  studentCount    Int
+  generatedAt     DateTime @default(now())
+
+  // Relations
+  session         ClassSession    @relation(fields: [sessionId], references: [id])
+  studentReports  StudentReport[]
+}
+
+// 15. Student Reports
+model StudentReport {
+  id                      String  @id @default(cuid())
+  sessionReportId         String
+  studentId               String
+  readinessScore          Float
+  weakCriteria            Json
+  duringClassQCount       Int     @default(0)
+  caughtUp                Boolean @default(false)
+  semesterProgressPercent Float   @default(0)
+
+  // Relations
+  sessionReport   SessionReport @relation(fields: [sessionReportId], references: [id])
+  student         User          @relation(fields: [studentId], references: [id])
+}
+
+// 16. Training Data
+model TrainingData {
+  id           String   @id @default(cuid())
+  question     String
+  answer       String
+  source       String
+  sessionId    String
+  studentId    String
+  topic        String?
+  usedForTrain Boolean  @default(false)
+  storedAt     DateTime @default(now())
+
+  // Relations
+  session      ClassSession @relation(fields: [sessionId], references: [id])
+  student      User         @relation(fields: [studentId], references: [id])
+}
+
+// 17. Weekly Summaries
+model WeeklySummary {
+  id               String   @id @default(cuid())
+  subjectId        String
+  weekNumber       Int
+  weekStart        DateTime
+  weekEnd          DateTime
+  avgReadiness     Float    @default(0)
+  semesterProgress Float    @default(0)
+  aiSummary        String
+  generatedAt      DateTime @default(now())
+
+  // Relations
+  subject          Subject @relation(fields: [subjectId], references: [id])
+}
+
+// 18. Chat Image Logs
+model ChatImageLog {
+  id          String   @id @default(cuid())
+  studentId   String
+  sessionId   String
+  messageId   String
+  imageUrl    String
+  materialId  String?
+  pageNumber  Int?
+  createdAt   DateTime @default(now())
+
+  student     User         @relation(fields: [studentId], references: [id])
+  session     ClassSession @relation(fields: [sessionId], references: [id])
+  material    Material?    @relation(fields: [materialId], references: [id])
+}
+
+// 19. Attendance
+model Attendance {
+  id          String   @id @default(cuid())
+  studentId   String
+  sessionId   String
+  photoUrl    String
+  checkedInAt DateTime @default(now())
+
+  student     User         @relation(fields: [studentId], references: [id])
+  session     ClassSession @relation(fields: [sessionId], references: [id])
+
+  @@unique([studentId, sessionId])
+}
+
+model AnswerReference {
+  id               String                    @id @default(cuid())
+  messageId        String
+  studentMessageId String?
+  sessionId        String
+  studentId        String
+  sourceType       AnswerReferenceSourceType
+  sourceName       String?
+  materialId       String?
+  materialFileName String?
+  pageNumber       Int?
+  sourceQuote      String?
+  provider         String?
+  createdAt        DateTime                  @default(now())
+
+  message          Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  session          ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student          User         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([studentMessageId])
+  @@index([sessionId])
+}

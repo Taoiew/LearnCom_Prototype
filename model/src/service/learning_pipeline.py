@@ -81,6 +81,13 @@ class LearningCompanionPipeline:
             if retrieved
             else 0.0
         )
+        if self._has_conversation_attachment_context(
+            retrieved
+        ):
+            material_score = max(
+                material_score,
+                self.scope_router.material_threshold,
+            )
 
         routing = self.scope_router.route(
             RoutingInput(
@@ -194,6 +201,16 @@ class LearningCompanionPipeline:
         return search(
             request.question,
             top_k=self.top_k,
+        )
+
+    @staticmethod
+    def _has_conversation_attachment_context(
+        retrieved: list[RetrievedChunk],
+    ) -> bool:
+        return any(
+            "conversation_attachment"
+            in result.chunk.image_ids
+            for result in retrieved
         )
 
     @staticmethod

@@ -13,7 +13,7 @@ from tenacity import (
 
 
 class LLMClientError(RuntimeError):
-    """เกิดขึ้นเมื่อคำตอบจาก LLM ไม่ตรงตามรูปแบบที่ระบบต้องการ."""
+    """Raised when the LLM response does not match the expected format."""
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,7 @@ from src.ingestion.pdf_ingestor import MaterialChunk
 class KBEnrichmentAgent(ABC):
     @abstractmethod
     def enrich(self, chunk: MaterialChunk) -> EnrichedKnowledge:
-        """กลั่น Source KB chunk ให้เป็น Enriched KB record."""
+        """Convert a source KB chunk into an enriched KB record."""
 
 
 class MockKBEnrichmentAgent(KBEnrichmentAgent):
@@ -26,11 +26,11 @@ class MockKBEnrichmentAgent(KBEnrichmentAgent):
             summary=chunk.text,
             key_concepts=[],
             learning_objectives=[
-                f"อธิบายแนวคิดเกี่ยวกับ {topic} ได้"
+                f"Explain the key concept related to {topic}"
             ],
             common_misconceptions=[],
             suggested_questions=[
-                f"{topic} มีหลักการสำคัญอย่างไร"
+                f"What are the important principles of {topic}?"
             ],
             source_quote=chunk.text[:300],
             confidence=0.50,
