@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
 import {
   Layers,
@@ -25,9 +25,12 @@ import {
   getStudentAttendance,
   getStudentChatHistory,
   getSessionDetails,
+  getStudentNextClassPreview,
   sendStudentChatMessage,
   sendStudentChatMessageWithAttachment,
+  submitNextClassReadiness,
   type ApiSessionResponse,
+  type NextClassPreview,
   type StudentAnswerReference,
 } from "@/lib/api";
 
@@ -131,6 +134,20 @@ export default function Page() {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const [nextClassPreview, setNextClassPreview] = useState<NextClassPreview | null>(null);
+  const [isNextClassModalOpen, setIsNextClassModalOpen] = useState(false);
+  const [nextClassAnswers, setNextClassAnswers] = useState<Record<string, number>>({});
+  const [nextClassResult, setNextClassResult] = useState("");
+  const [nextClassError, setNextClassError] = useState("");
+  const [isSubmittingNextClass, setIsSubmittingNextClass] = useState(false);
+
+  const clearAttendancePhoto = useCallback(() => {
+    setAttendanceFile(null);
+    setAttendancePreview(null);
+    if (attendanceInputRef.current) {
+      attendanceInputRef.current.value = "";
+    }
+  }, []);
 
   useEffect(() => {
     let ignore = false;
@@ -138,15 +155,35 @@ export default function Page() {
     async function loadSessionAndHistory() {
       setIsHistoryLoading(true);
       try {
-        const [session, history, attendances] = await Promise.all([
+        const [sessionResult, historyResult, attendanceResult, previewResult] = await Promise.allSettled([
           getSessionDetails(sessionId),
           getStudentChatHistory(sessionId),
           getStudentAttendance(sessionId),
+          getStudentNextClassPreview(sessionId),
         ]);
 
         if (ignore) return;
 
+        if (sessionResult.status === "rejected") {
+          throw sessionResult.reason;
+        }
+
+        const session = sessionResult.value;
         setCurrentSession(session);
+        setLoadError("");
+
+        if (previewResult.status === "fulfilled") {
+          setNextClassPreview(previewResult.value);
+        } else {
+          setNextClassPreview(null);
+          console.error("Load next-class preview error:", previewResult.reason);
+        }
+
+        const attendances =
+          attendanceResult.status === "fulfilled" ? attendanceResult.value : [];
+        if (attendanceResult.status === "rejected") {
+          console.error("Load attendance error:", attendanceResult.reason);
+        }
         const isAlreadyCheckedIn = attendances.length > 0;
         setHasCheckedAttendance(isAlreadyCheckedIn);
         if (session.status === "ACTIVE" && !isAlreadyCheckedIn) {
@@ -161,14 +198,25 @@ export default function Page() {
             : null;
           setScheduledAttendanceAt(assignedTime);
         }
-        const historyMessages = history.messages.map((message) => ({
-          id: message.id,
-          sender: message.role === "STUDENT" ? "user" as const : "bot" as const,
-          text: message.content,
-          image: message.imageUrl ?? undefined,
-          references: message.references ?? [],
-        }));
-        setMessages(historyMessages.length ? historyMessages : [welcomeMessage]);
+
+        if (historyResult.status === "fulfilled") {
+          const historyMessages = historyResult.value.messages.map((message) => ({
+            id: message.id,
+            sender: message.role === "STUDENT" ? "user" as const : "bot" as const,
+            text: message.content,
+            image: message.imageUrl ?? undefined,
+            references: message.references ?? [],
+          }));
+          setMessages(historyMessages.length ? historyMessages : [welcomeMessage]);
+        } else {
+          console.error("Load chat history error:", historyResult.reason);
+          setMessages([welcomeMessage]);
+          setLoadError(
+            historyResult.reason instanceof Error
+              ? historyResult.reason.message
+              : "Failed to load chat history.",
+          );
+        }
       } catch (error) {
         if (!ignore) {
           setLoadError(
@@ -235,7 +283,7 @@ export default function Page() {
         attendanceScheduleIntervalRef.current = null;
       }
     };
-  }, [scheduledAttendanceAt, hasCheckedAttendance]);
+  }, [scheduledAttendanceAt, hasCheckedAttendance, clearAttendancePhoto]);
 
   const handleAddSubjectSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -338,14 +386,6 @@ export default function Page() {
     reader.readAsDataURL(file);
   };
 
-  const clearAttendancePhoto = () => {
-    setAttendanceFile(null);
-    setAttendancePreview(null);
-    if (attendanceInputRef.current) {
-      attendanceInputRef.current.value = "";
-    }
-  };
-
   const handleAttendanceCheckIn = async () => {
     if (!attendanceFile || isCheckingAttendance) {
       setAttendanceError("Please add a photo before checking in.");
@@ -371,6 +411,39 @@ export default function Page() {
       );
     } finally {
       setIsCheckingAttendance(false);
+    }
+  };
+
+  const handleSubmitNextClassReadiness = async () => {
+    if (!nextClassPreview || isSubmittingNextClass) return;
+
+    const answers = nextClassPreview.questions.map((question) => ({
+      questionId: question.id,
+      selectedChoiceIndex: nextClassAnswers[question.id],
+    }));
+
+    if (answers.some((answer) => answer.selectedChoiceIndex === undefined)) {
+      setNextClassError("Please answer every readiness question.");
+      return;
+    }
+
+    setNextClassError("");
+    setIsSubmittingNextClass(true);
+    try {
+      const result = await submitNextClassReadiness({
+        previewId: nextClassPreview.id,
+        answers,
+      });
+      setNextClassResult(
+        `Submitted. Readiness score: ${result.score}% (${result.correctCount}/${result.totalQuestions}).`,
+      );
+      setNextClassPreview({ ...nextClassPreview, submitted: true });
+    } catch (error) {
+      setNextClassError(
+        error instanceof Error ? error.message : "Could not submit readiness check.",
+      );
+    } finally {
+      setIsSubmittingNextClass(false);
     }
   };
 
@@ -453,6 +526,23 @@ export default function Page() {
                 >
                   Take readiness quiz
                 </button>
+                {nextClassPreview && (
+                  <button
+                    suppressHydrationWarning
+                    type="button"
+                    onClick={() => setIsNextClassModalOpen(true)}
+                    className={[
+                      "px-5 py-4 text-[13px] font-bold rounded-full shadow-sm hover:shadow transition-all active:scale-95 cursor-pointer flex-shrink-0",
+                      nextClassPreview.submitted
+                        ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
+                        : "bg-white text-[#d84315] border border-orange-100",
+                    ].join(" ")}
+                  >
+                    {nextClassPreview.submitted
+                      ? "Next-class check done"
+                      : "Next-class check"}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -718,6 +808,127 @@ export default function Page() {
               >
                 {isCheckingAttendance && <Loader2 size={14} className="animate-spin" />}
                 Check in
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isNextClassModalOpen && nextClassPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[1px]">
+          <div className="flex max-h-[90vh] w-full max-w-[720px] flex-col rounded-[26px] border border-stone-100 bg-white p-7 text-left shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-bold text-stone-950">
+                  Next-class readiness check
+                </h3>
+                <p className="mt-1 text-sm font-semibold text-[#d84315]">
+                  {nextClassPreview.title}
+                </p>
+                <p className="mt-2 text-sm leading-relaxed text-stone-500">
+                  {nextClassPreview.previewContent ||
+                    "Answer these short questions so your teacher can adjust the next class."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsNextClassModalOpen(false)}
+                className="rounded-md p-1 text-stone-400 transition-colors hover:text-stone-700"
+                aria-label="Close next-class readiness check"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-2">
+              {nextClassPreview.questions.map((question, questionIndex) => (
+                <div
+                  key={question.id}
+                  className="rounded-2xl border border-stone-200 bg-stone-50/60 p-4"
+                >
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#d84315]">
+                    Question {questionIndex + 1} - {question.topic}
+                  </p>
+                  <p className="mt-2 text-sm font-bold text-stone-900">
+                    {question.questionText}
+                  </p>
+                  {(question.materialReferences?.length ?? 0) > 0 && (
+                    <div className="mt-3 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[11px] leading-relaxed text-stone-500">
+                      <p className="font-bold uppercase tracking-[0.12em] text-stone-400">
+                        Source for this question
+                      </p>
+                      {question.materialReferences?.slice(0, 2).map((reference) => (
+                        <p key={`${question.id}-${reference.materialId}-${reference.pageNumber ?? "file"}`} className="mt-1">
+                          {reference.fileName}
+                          {reference.pageNumber ? ` p.${reference.pageNumber}` : ""}
+                          {reference.sourceExcerpt ? ` - ${reference.sourceExcerpt}` : ""}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-3 space-y-2">
+                    {(question.choices ?? []).map((choice, choiceIndex) => (
+                      <label
+                        key={`${question.id}-${choiceIndex}`}
+                        className={[
+                          "flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-3 text-sm transition-colors",
+                          nextClassAnswers[question.id] === choiceIndex
+                            ? "border-orange-200 bg-orange-50 text-stone-900"
+                            : "border-stone-200 bg-white text-stone-700 hover:bg-stone-50",
+                        ].join(" ")}
+                      >
+                        <input
+                          type="radio"
+                          name={question.id}
+                          checked={nextClassAnswers[question.id] === choiceIndex}
+                          onChange={() =>
+                            setNextClassAnswers((current) => ({
+                              ...current,
+                              [question.id]: choiceIndex,
+                            }))
+                          }
+                          className="mt-1"
+                          disabled={nextClassPreview.submitted}
+                        />
+                        <span>{choice}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {nextClassError && (
+              <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-xs font-semibold text-red-600">
+                {nextClassError}
+              </p>
+            )}
+
+            {nextClassResult && (
+              <p className="mt-4 rounded-xl bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-700">
+                {nextClassResult}
+              </p>
+            )}
+
+            <div className="mt-6 flex justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setIsNextClassModalOpen(false)}
+                className="rounded-full border border-stone-950 px-5 py-2 text-[13px] font-bold text-stone-950 transition-all hover:bg-stone-50"
+              >
+                Later
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmitNextClassReadiness}
+                disabled={isSubmittingNextClass || nextClassPreview.submitted}
+                className="rounded-full bg-[#e65100] px-5 py-2 text-[13px] font-bold text-white shadow-sm transition-all hover:bg-[#d84315] disabled:opacity-50"
+              >
+                {nextClassPreview.submitted
+                  ? "Submitted"
+                  : isSubmittingNextClass
+                    ? "Submitting..."
+                    : "Submit readiness"}
               </button>
             </div>
           </div>

@@ -62,11 +62,11 @@ export function proxy(request: NextRequest) {
 
   const isStudentSessionRead =
     request.method === "GET" &&
-    /^\/api\/v1\/sessions(?:\/[^/]+)?(?:\/materials)?\/?$/.test(pathname)
+    /^\/api\/v1\/sessions(?:\/[^/]+)?(?:\/materials|\/next-class-preview)?\/?$/.test(pathname)
 
   if (pathname.startsWith("/api/v1/sessions") && user.role === "STUDENT" && !isStudentSessionRead) {
     return NextResponse.json(
-      { error: "Access denied — teachers only" },
+      { error: "Access denied - teachers only" },
       { status: 403 }
     )
   }
@@ -89,7 +89,7 @@ export function proxy(request: NextRequest) {
   if (teacherOnlyRoutes.some((route) => pathname.startsWith(route))) {
     if (user.role !== "TEACHER") {
       return NextResponse.json(
-        { error: "Access denied — teachers only" },
+        { error: "Access denied - teachers only" },
         { status: 403 }
       )
     }
@@ -99,7 +99,7 @@ export function proxy(request: NextRequest) {
   if (studentOnlyRoutes.some((route) => pathname.startsWith(route))) {
     if (user.role !== "STUDENT") {
       return NextResponse.json(
-        { error: "Access denied — students only" },
+        { error: "Access denied - students only" },
         { status: 403 }
       )
     }

@@ -282,6 +282,7 @@ export interface TeacherSessionSummary {
       takenAt: string;
     }>;
   };
+  nextClassReadiness?: NextClassPreview[];
   answerReferences: TeacherAnswerReference[];
 }
 
@@ -338,6 +339,83 @@ export interface SubmittedQuizResult {
   recommendation: string;
 }
 
+export interface NextClassReadinessQuestion {
+  id: string;
+  previewId?: string;
+  topic: string;
+  questionText: string;
+  choices: string[];
+  correctChoiceIndex?: number;
+  misconceptionLabels?: Record<string, string>;
+  materialReferences?: Array<{
+    materialId: string;
+    fileName: string;
+    pageNumber?: number | null;
+    sourceExcerpt?: string | null;
+  }>;
+  order: number;
+  answered?: boolean;
+}
+
+export interface NextClassFeedbackSummary {
+  id: string;
+  previewId: string;
+  nextSessionId: string;
+  participationCount: number;
+  eligibleStudentCount: number;
+  participationRate: number;
+  overallReadinessScore: number;
+  topicReadiness: Array<{
+    questionId: string;
+    topic: string;
+    totalResponses: number;
+    correctResponses: number;
+    correctRate: number;
+    status: "ready" | "partially_ready" | "needs_review";
+    commonWrongChoiceIndex: number | null;
+    commonMisconception: string | null;
+  }>;
+  commonMisconceptions: string[];
+  aiRecommendations: string[];
+  generatedAt: string;
+  revisionNotes: Array<{
+    id: string;
+    summaryId: string;
+    nextSessionId: string;
+    topic: string;
+    explanation: string;
+    example: string | null;
+    teachingAction: string | null;
+    priority: string;
+    isPublished: boolean;
+    createdAt: string;
+  }>;
+}
+
+export interface NextClassPreview {
+  id: string;
+  currentSessionId: string;
+  nextSessionId: string;
+  subjectId?: string;
+  title: string;
+  previewContent: string;
+  materialIds?: string[];
+  status: "DRAFT" | "PUBLISHED" | "CLOSED" | string;
+  createdAt?: string;
+  publishedAt?: string | null;
+  questions: NextClassReadinessQuestion[];
+  summary?: NextClassFeedbackSummary | null;
+  submitted?: boolean;
+}
+
+export interface NextClassReadinessResult {
+  previewId: string;
+  score: number;
+  correctCount: number;
+  totalQuestions: number;
+  readiness: "READY" | "PARTIALLY_READY" | "NEEDS_REVIEW";
+}
+
 const AUTH_STORAGE_KEY = "learning-companion-auth";
 export const TEACHER_SUBJECT_STORAGE_KEY = "learning-companion-teacher-subject";
 export const TEACHER_SUBJECT_CHANGE_EVENT =
@@ -358,7 +436,7 @@ function getAuthHeaders(): HeadersInit {
 
 async function parseError(response: Response, fallback: string) {
   try {
-    const body = await response.json();
+    const body = await response.clone().json();
     return body.error ?? body.detail ?? fallback;
   } catch {
     return (await response.text()) || fallback;
@@ -483,6 +561,12 @@ function mapStudentSession(session: ApiSessionResponse, index: number): StudentS
   };
 }
 
+function sortSessionsByDate<T extends { date: string }>(sessions: T[]): T[] {
+  return [...sessions].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+  );
+}
+
 export async function loginWithBackend(
   email: string,
   password: string,
@@ -566,7 +650,7 @@ export async function getTeacherDashboardViewModel(): Promise<TeacherDashboardVi
     sessionsBySubject[subject.code] = [];
   }
 
-  for (const session of sessionsBody.sessions) {
+  for (const session of sortSessionsByDate(sessionsBody.sessions)) {
     const subject = subjects.find((item) => item.id === session.subjectId);
     const key = subject?.code ?? session.subject?.name ?? "Unassigned";
     const list = sessionsBySubject[key] ?? [];
@@ -588,7 +672,7 @@ export async function getStudentDashboardViewModel(): Promise<StudentDashboardVi
     attendanceBody.attendances.map((attendance) => [attendance.sessionId, attendance]),
   );
 
-  for (const session of body.sessions) {
+  for (const session of sortSessionsByDate(body.sessions)) {
     const subjectName = session.subject?.name ?? "Active course";
     const pseudoSubject: ApiSubjectResponse = {
       id: session.subjectId ?? subjectName,
@@ -907,4 +991,85 @@ export async function submitReadinessQuiz(payload: {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function createNextClassPreview(payload: {
+  currentSessionId: string;
+  nextSessionId: string;
+  title: string;
+  previewContent: string;
+  materialIds?: string[];
+}): Promise<NextClassPreview> {
+  const body = await apiFetch<{ preview: NextClassPreview }>("/api/v1/next-class-previews", {
+    method: "POST",
+    body: JSON.stringify({ ...payload, generateQuestions: true }),
+  });
+  return body.preview;
+}
+
+export async function publishNextClassPreview(previewId: string): Promise<NextClassPreview> {
+  const body = await apiFetch<{ preview: NextClassPreview }>(
+    `/api/v1/next-class-previews/${previewId}/publish`,
+    { method: "POST" },
+  );
+  return body.preview;
+}
+
+export async function analyzeNextClassPreview(
+  previewId: string,
+): Promise<NextClassFeedbackSummary> {
+  const body = await apiFetch<{ summary: NextClassFeedbackSummary }>(
+    `/api/v1/next-class-previews/${previewId}/analyze`,
+    { method: "POST" },
+  );
+  return body.summary;
+}
+
+export async function getStudentNextClassPreview(
+  sessionId: string,
+): Promise<NextClassPreview | null> {
+  const body = await apiFetch<{ preview: NextClassPreview | null }>(
+    `/api/v1/sessions/${sessionId}/next-class-preview`,
+  );
+  return body.preview;
+}
+
+export async function submitNextClassReadiness(payload: {
+  previewId: string;
+  answers: Array<{ questionId: string; selectedChoiceIndex: number }>;
+}): Promise<NextClassReadinessResult> {
+  const body = await apiFetch<NextClassReadinessResult>(
+    `/api/v1/next-class-previews/${payload.previewId}/responses`,
+    {
+      method: "POST",
+      body: JSON.stringify({ answers: payload.answers }),
+    },
+  );
+  return body;
+}
+
+export async function createRevisionNote(payload: {
+  summaryId: string;
+  topic: string;
+  explanation: string;
+  example?: string;
+  teachingAction?: string;
+  priority?: "low" | "medium" | "high";
+}) {
+  const body = await apiFetch<{
+    note: NonNullable<NextClassFeedbackSummary["revisionNotes"]>[number];
+  }>(`/api/v1/next-class-feedback/${payload.summaryId}/revision-notes`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.note;
+}
+
+export async function publishRevisionNote(revisionId: string) {
+  const body = await apiFetch<{
+    note: NonNullable<NextClassFeedbackSummary["revisionNotes"]>[number];
+  }>(`/api/v1/revision-notes/${revisionId}/publish`, {
+    method: "POST",
+  });
+  return body.note;
 }

@@ -410,7 +410,7 @@ export async function GET(
       return NextResponse.json({ error: "Access denied" }, { status: 403 })
     }
 
-    const [messages, chatImages, attendanceRows, answerReferences, quizzes] = await Promise.all([
+    const [messages, chatImages, attendanceRows, answerReferences, quizzes, nextClassPreviews] = await Promise.all([
       prisma.message.findMany({
         where: {
           role: "STUDENT",
@@ -457,6 +457,14 @@ export async function GET(
           },
         },
         orderBy: { takenAt: "desc" },
+      }),
+      prisma.nextClassPreview.findMany({
+        where: { currentSessionId: sessionId },
+        include: {
+          questions: { orderBy: { order: "asc" } },
+          summary: { include: { revisionNotes: { orderBy: { createdAt: "desc" } } } },
+        },
+        orderBy: { createdAt: "desc" },
       }),
     ])
 
@@ -545,6 +553,18 @@ export async function GET(
         },
         topicRanking,
         quizOverview: summarizeQuizzes(quizzes),
+        nextClassReadiness: nextClassPreviews.map((preview) => ({
+          id: preview.id,
+          currentSessionId: preview.currentSessionId,
+          nextSessionId: preview.nextSessionId,
+          title: preview.title,
+          previewContent: preview.previewContent,
+          status: preview.status,
+          createdAt: preview.createdAt,
+          publishedAt: preview.publishedAt,
+          questions: preview.questions,
+          summary: preview.summary,
+        })),
         questions,
         answerReferences: answerReferences.map((reference) => {
           const studentQuestion = reference.studentMessageId

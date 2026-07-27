@@ -117,7 +117,7 @@ export default function ReadinessQuizPage() {
             "radial-gradient(ellipse 1600px 600px at 70% 0%, #ffd4a8 0%, #ffdfb8 20%, #ffe9cc 40%, #fff2e0 60%, #ffebd6 100%)",
         }}
       >
-        <div className="relative z-10 max-w-4xl mx-auto space-y-5">
+        <div className="relative z-10 mx-auto w-full max-w-6xl space-y-5">
           <button
             type="button"
             onClick={() => window.history.back()}
@@ -135,7 +135,7 @@ export default function ReadinessQuizPage() {
             </p>
           </div>
 
-          <div className="bg-white border border-stone-200/80 rounded-2xl p-8 shadow-sm text-sm text-stone-500">
+          <div className="min-h-[520px] bg-white border border-stone-200/80 rounded-2xl p-8 shadow-sm text-sm text-stone-500">
             {!quiz && (
               <div className="space-y-6">
                 <div className="inline-grid grid-cols-2 rounded-full bg-stone-100 p-1 text-xs font-bold text-stone-500">
@@ -159,33 +159,33 @@ export default function ReadinessQuizPage() {
                   ))}
                 </div>
 
-                <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
+                <div className="flex flex-col gap-5 rounded-2xl bg-stone-50/60 p-6 md:flex-row md:items-center md:justify-between">
                   <div className="space-y-2">
-                  <h3 className="text-base font-bold text-stone-900">
-                    {selectedPhase === "BEFORE"
-                      ? "Generate a pre-class readiness check"
-                      : "Generate a personalized post-class check"}
-                  </h3>
-                  <p className="max-w-xl text-sm leading-relaxed text-stone-500">
-                    {selectedPhase === "BEFORE"
-                      ? "This quiz uses session materials and rubric criteria to measure whether you are ready before class."
-                      : "This quiz uses the session rubric, material evidence, your earlier chat questions, and earlier quiz gaps. Answers are graded more strictly with Gemini."}
-                  </p>
-                  {quizError && (
-                    <p className="text-xs font-semibold text-red-500">
-                      {quizError}
+                    <h3 className="text-lg font-bold text-stone-900">
+                      {selectedPhase === "BEFORE"
+                        ? "Generate a pre-class readiness check"
+                        : "Generate a personalized post-class check"}
+                    </h3>
+                    <p className="max-w-3xl text-sm leading-relaxed text-stone-500">
+                      {selectedPhase === "BEFORE"
+                        ? "This quiz uses session materials and rubric criteria to measure whether you are ready before class."
+                        : "This quiz uses the session rubric, material evidence, your earlier chat questions, and earlier quiz gaps. Answers are graded more strictly with Gemini."}
                     </p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={handleGenerateQuiz}
-                  disabled={!session || isGenerating}
-                  className="inline-flex items-center justify-center gap-2 rounded-full bg-[#e65100] px-6 py-3 text-xs font-bold text-white shadow-sm transition-all hover:bg-[#d84315] disabled:opacity-50"
-                >
-                  {isGenerating && <Loader2 size={15} className="animate-spin" />}
-                  {selectedPhase === "BEFORE" ? "Generate pre-quiz" : "Generate post-quiz"}
-                </button>
+                    {quizError && (
+                      <p className="text-xs font-semibold text-red-500">
+                        {quizError}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleGenerateQuiz}
+                    disabled={!session || isGenerating}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-[#e65100] px-6 py-3 text-xs font-bold text-white shadow-sm transition-all hover:bg-[#d84315] disabled:opacity-50 md:min-w-[190px]"
+                  >
+                    {isGenerating && <Loader2 size={15} className="animate-spin" />}
+                    {selectedPhase === "BEFORE" ? "Generate pre-quiz" : "Generate post-quiz"}
+                  </button>
                 </div>
               </div>
             )}
@@ -241,7 +241,7 @@ export default function ReadinessQuizPage() {
                         )}
                       </div>
 
-                      <div className="grid gap-3 md:grid-cols-2">
+                      <div className="grid gap-3 lg:grid-cols-2">
                         <div className="rounded-xl bg-white p-4 ring-1 ring-stone-200">
                           <p className="text-[11px] font-bold uppercase tracking-wide text-stone-400">
                             Rubric
@@ -272,7 +272,7 @@ export default function ReadinessQuizPage() {
                           }))
                         }
                         disabled={Boolean(result)}
-                        rows={4}
+                        rows={5}
                         placeholder="Write your answer here..."
                         className="w-full resize-y rounded-2xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-900 outline-none transition-all focus:border-orange-500 disabled:bg-stone-100"
                       />

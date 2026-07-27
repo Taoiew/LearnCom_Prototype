@@ -3,7 +3,6 @@
 import React, {
   createContext,
   useContext,
-  useEffect,
   useMemo,
   useState,
 } from "react";
@@ -24,16 +23,8 @@ type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<ApiUser | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const storedUser = getStoredAuthUser();
-    if (storedUser) {
-      setUser(storedUser);
-    }
-    setLoading(false);
-  }, []);
+  const [user, setUser] = useState<ApiUser | null>(() => getStoredAuthUser());
+  const [loading] = useState(false);
 
   const login = async (email: string, password: string) => {
     const { loginWithBackend } = await import("@/lib/api");
