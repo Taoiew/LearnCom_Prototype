@@ -10,6 +10,10 @@ import {
   ChevronDown,
   Plus,
   X,
+  CheckCircle2,
+  AlertTriangle,
+  MessageSquare,
+  BookOpen,
 } from "lucide-react";
 
 import {
@@ -19,6 +23,14 @@ import {
   type StudentDashboardViewModel,
   type StudentProgressViewModel,
 } from "@/lib/api";
+
+const emptySubject: AppSubject = {
+  id: "",
+  code: "",
+  name: "",
+  displayShort: "",
+  weeks: "",
+};
 
 export default function MyProgressPage() {
   const [dashboardViewModel, setDashboardViewModel] =
@@ -35,27 +47,39 @@ export default function MyProgressPage() {
       subjectCode: "",
       stats: [],
       progress: [],
+      sessionInsights: [],
     });
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [selectedSubject, setSelectedSubject] = useState<AppSubject>({
-      id: "",
-      code: "",
-      name: "",
-      displayShort: "",
-      weeks: "",
-  });
+  const [selectedSubject, setSelectedSubject] = useState<AppSubject>(emptySubject);
   const [isAddSubjectModalOpen, setIsAddSubjectModalOpen] = useState(false);
   const [subjectCode, setSubjectCode] = useState("");
+
+  const loadProgressForSubject = async (subject: AppSubject) => {
+    setSelectedSubject(subject);
+    setIsDropdownOpen(false);
+    setLoadError("");
+    setIsLoading(true);
+    try {
+      const progress = await getStudentProgressViewModel(subject.code);
+      setProgressViewModel(progress);
+    } catch (error) {
+      setLoadError(
+        error instanceof Error ? error.message : "Failed to load progress.",
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   useEffect(() => {
     let ignore = false;
 
     async function load() {
       try {
         const dashboard = await getStudentDashboardViewModel();
-        const firstSubject =
-          dashboard.subjects[0] ?? selectedSubject;
+        const firstSubject = dashboard.subjects[0] ?? emptySubject;
         const progress = await getStudentProgressViewModel(firstSubject.code);
         if (ignore) return;
         setDashboardViewModel(dashboard);
@@ -132,10 +156,7 @@ export default function MyProgressPage() {
                     return (
                       <div
                         key={subject.id}
-                        onClick={() => {
-                          setSelectedSubject(subject);
-                          setIsDropdownOpen(false);
-                        }}
+                        onClick={() => void loadProgressForSubject(subject)}
                         className={`p-3 text-left cursor-pointer transition-colors ${
                           isSelected
                             ? "bg-[#fff3ed] text-[#d84315]"
@@ -271,6 +292,18 @@ export default function MyProgressPage() {
             ))}
           </div>
 
+          {loadError && (
+            <div className="bg-white border border-red-100 rounded-2xl p-4 text-sm font-medium text-red-600 shadow-sm">
+              {loadError}
+            </div>
+          )}
+
+          {isLoading && (
+            <div className="bg-white border border-stone-200/70 rounded-2xl p-5 text-sm font-semibold text-stone-500 shadow-sm">
+              Loading your learning profile...
+            </div>
+          )}
+
           <div className="space-y-4">
             <h2 className="text-xs font-bold text-stone-400 uppercase tracking-wider">
               Readiness by session
@@ -306,6 +339,173 @@ export default function MyProgressPage() {
                 </div>
               ))}
             </div>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <h2 className="text-xs font-bold text-stone-400 uppercase tracking-wider">
+                Strengths and focus areas
+              </h2>
+              <p className="text-xs text-stone-500 mt-1">
+                Built from your quiz results and the questions you asked in each session.
+              </p>
+            </div>
+
+            {progressViewModel.sessionInsights.length === 0 && !isLoading ? (
+              <div className="bg-white border border-stone-200/70 rounded-2xl p-6 text-sm font-medium text-stone-500 shadow-sm">
+                No quiz or chat activity has been recorded yet.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                {progressViewModel.sessionInsights.map((insight) => (
+                  <section
+                    key={insight.id}
+                    className="bg-white border border-stone-200/70 rounded-2xl p-5 shadow-sm"
+                  >
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-stone-400">
+                          {insight.status}
+                        </p>
+                        <h3 className="mt-1 text-lg font-bold text-stone-950">
+                          {insight.weekTitle}
+                        </h3>
+                        <p className="mt-1 text-xs font-medium text-stone-500">
+                          Latest quiz: {insight.latestQuizResult}
+                        </p>
+                      </div>
+                      <div className="rounded-2xl bg-[#fff3ed] px-4 py-3 text-right">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-[#d84315]">
+                          Readiness
+                        </p>
+                        <p className="text-2xl font-bold text-stone-950">
+                          {insight.readiness}%
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-2 gap-3">
+                      <div className="rounded-xl bg-stone-50 px-3 py-2">
+                        <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-stone-400">
+                          <BookOpen size={13} />
+                          Quiz
+                        </div>
+                        <p className="mt-1 text-sm font-bold text-stone-900">
+                          {insight.quizAttempts} attempts
+                        </p>
+                      </div>
+                      <div className="rounded-xl bg-stone-50 px-3 py-2">
+                        <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-stone-400">
+                          <MessageSquare size={13} />
+                          Chat
+                        </div>
+                        <p className="mt-1 text-sm font-bold text-stone-900">
+                          {insight.chatQuestions} questions
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                      <div>
+                        <div className="mb-2 flex items-center gap-2 text-xs font-bold text-emerald-700">
+                          <CheckCircle2 size={15} />
+                          Strengths
+                        </div>
+                        {insight.strengths.length ? (
+                          <div className="space-y-2">
+                            {insight.strengths.map((item) => (
+                              <p
+                                key={item}
+                                className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-900"
+                              >
+                                {item}
+                              </p>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs font-medium text-stone-400">
+                            Complete a quiz to reveal strengths.
+                          </p>
+                        )}
+                      </div>
+
+                      <div>
+                        <div className="mb-2 flex items-center gap-2 text-xs font-bold text-orange-700">
+                          <AlertTriangle size={15} />
+                          Needs work
+                        </div>
+                        {insight.weaknesses.length ? (
+                          <div className="space-y-2">
+                            {insight.weaknesses.map((item) => (
+                              <p
+                                key={item}
+                                className="rounded-xl border border-orange-100 bg-orange-50 px-3 py-2 text-xs font-medium text-orange-950"
+                              >
+                                {item}
+                              </p>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs font-medium text-stone-400">
+                            No clear weakness detected yet.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-5 border-t border-stone-100 pt-4">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-stone-400">
+                        Suggested focus
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {(insight.suggestedFocus.length ? insight.suggestedFocus : ["Ask more questions or submit a quiz for better guidance"]).map((item) => (
+                          <span
+                            key={item}
+                            className="rounded-full border border-stone-200 bg-white px-3 py-1 text-xs font-semibold text-stone-600"
+                          >
+                            {item}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {insight.references.length > 0 && (
+                      <div className="mt-4">
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-stone-400">
+                          Material references
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {insight.references.map((reference) => (
+                            <span
+                              key={`${reference.materialId}-${reference.fileName}-${reference.pageNumber}`}
+                              className="rounded-full bg-[#fff7ed] px-3 py-1 text-[11px] font-semibold text-stone-600"
+                            >
+                              {reference.fileName}
+                              {reference.pageNumber ? ` p.${reference.pageNumber}` : ""}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mt-5 flex flex-wrap gap-2">
+                      <Link
+                        href={`/student/session/${insight.id}`}
+                        className="rounded-full bg-[#e65100] px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-[#d84315]"
+                      >
+                        Open session
+                      </Link>
+                      <Link
+                        href={`/student/session/${insight.id}/quiz`}
+                        className="rounded-full border border-stone-900 px-4 py-2 text-xs font-bold text-stone-900 hover:bg-stone-50"
+                      >
+                        Review quiz
+                      </Link>
+                    </div>
+                  </section>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </main>

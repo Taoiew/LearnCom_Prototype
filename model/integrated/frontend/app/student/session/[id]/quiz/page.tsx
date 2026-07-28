@@ -1,18 +1,33 @@
 ﻿"use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { CheckCircle2, ChevronLeft, Loader2 } from "lucide-react";
+import { CheckCircle2, ChevronLeft, Clock3, Loader2 } from "lucide-react";
 import StudentSidebar from "@/components/studentsidebar";
 import {
   generateReadinessQuiz,
   getSessionDetails,
+  getStudentQuizHistory,
   submitReadinessQuiz,
   type ApiSessionResponse,
   type GeneratedReadinessQuiz,
   type QuizPhase,
+  type StudentQuizHistoryAttempt,
   type SubmittedQuizResult,
 } from "@/lib/api";
+
+function formatQuizDate(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatReadiness(value: StudentQuizHistoryAttempt["readiness"]) {
+  return value.replace("_", " ").toLowerCase();
+}
 
 export default function ReadinessQuizPage() {
   const params = useParams();
@@ -23,9 +38,23 @@ export default function ReadinessQuizPage() {
   const [selectedPhase, setSelectedPhase] = useState<QuizPhase>("BEFORE");
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [result, setResult] = useState<SubmittedQuizResult | null>(null);
+  const [quizHistory, setQuizHistory] = useState<StudentQuizHistoryAttempt[]>([]);
+  const [historyError, setHistoryError] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [quizError, setQuizError] = useState("");
+
+  const loadQuizHistory = useCallback(async () => {
+    if (!sessionId) return;
+    setHistoryError("");
+    try {
+      setQuizHistory(await getStudentQuizHistory(sessionId));
+    } catch (error) {
+      setHistoryError(
+        error instanceof Error ? error.message : "Failed to load quiz history.",
+      );
+    }
+  }, [sessionId]);
 
   useEffect(() => {
     let ignore = false;
@@ -47,6 +76,26 @@ export default function ReadinessQuizPage() {
     };
   }, [sessionId]);
 
+  useEffect(() => {
+    let ignore = false;
+
+    getStudentQuizHistory(sessionId)
+      .then((attempts) => {
+        if (!ignore) setQuizHistory(attempts);
+      })
+      .catch((error) => {
+        if (!ignore) {
+          setHistoryError(
+            error instanceof Error ? error.message : "Failed to load quiz history.",
+          );
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [sessionId]);
+
   const handleGenerateQuiz = async () => {
     if (!session || isGenerating) return;
     setQuizError("");
@@ -59,6 +108,7 @@ export default function ReadinessQuizPage() {
       });
       setQuiz(nextQuiz);
       setAnswers({});
+      await loadQuizHistory();
     } catch (error) {
       setQuizError(
         error instanceof Error ? error.message : "Failed to generate quiz.",
@@ -83,12 +133,12 @@ export default function ReadinessQuizPage() {
     setQuizError("");
     setIsSubmitting(true);
     try {
-      setResult(
-        await submitReadinessQuiz({
+      const submitted = await submitReadinessQuiz({
           quizId: quiz.quizId,
           answers: nextAnswers,
-        }),
-      );
+        });
+      setResult(submitted);
+      await loadQuizHistory();
     } catch (error) {
       setQuizError(
         error instanceof Error ? error.message : "Failed to submit quiz.",
@@ -187,6 +237,119 @@ export default function ReadinessQuizPage() {
                     {selectedPhase === "BEFORE" ? "Generate pre-quiz" : "Generate post-quiz"}
                   </button>
                 </div>
+
+                <section className="rounded-2xl border border-stone-200/70 bg-white p-5">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-base font-bold text-stone-900">
+                        Quiz history
+                      </h3>
+                      <p className="text-xs text-stone-400">
+                        Your previous attempts and scores for this session.
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-stone-50 px-3 py-1 text-xs font-bold text-stone-500">
+                      {quizHistory.length} attempts
+                    </span>
+                  </div>
+
+                  {historyError && (
+                    <p className="mt-4 text-xs font-semibold text-red-500">
+                      {historyError}
+                    </p>
+                  )}
+
+                  {quizHistory.length === 0 && !historyError ? (
+                    <div className="mt-4 rounded-xl bg-stone-50 px-4 py-5 text-sm font-medium text-stone-500">
+                      No quiz attempts have been recorded yet.
+                    </div>
+                  ) : (
+                    <div className="mt-4 max-h-[280px] overflow-y-auto pr-1">
+                      <div className="space-y-3">
+                        {quizHistory.map((attempt) => {
+                          const isSubmitted = attempt.criteriaResults.length > 0;
+                          const metCount = attempt.criteriaResults.filter(
+                            (criteria) => criteria.status === "MET",
+                          ).length;
+                          const weakCount = attempt.criteriaResults.filter(
+                            (criteria) => criteria.status !== "MET",
+                          ).length;
+
+                          return (
+                            <div
+                              key={attempt.quizId}
+                              className="rounded-2xl border border-stone-200 bg-stone-50/70 p-4"
+                            >
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-[#d84315] ring-1 ring-orange-100">
+                                      {attempt.phase === "BEFORE" ? "Before class" : "After class"}
+                                    </span>
+                                    {!isSubmitted && (
+                                      <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-stone-400 ring-1 ring-stone-200">
+                                        Not submitted
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-stone-400">
+                                    <Clock3 size={13} />
+                                    {formatQuizDate(attempt.takenAt)}
+                                  </p>
+                                </div>
+                                <div className="text-left sm:text-right">
+                                  <p className="text-2xl font-bold text-stone-950">
+                                    {isSubmitted ? `${Math.round(attempt.totalScore)}%` : "-"}
+                                  </p>
+                                  <p className="text-xs font-semibold capitalize text-stone-500">
+                                    {isSubmitted ? formatReadiness(attempt.readiness) : "waiting for answers"}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {isSubmitted && (
+                                <div className="mt-4 grid grid-cols-2 gap-2">
+                                  <div className="rounded-xl bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800">
+                                    {metCount} criteria met
+                                  </div>
+                                  <div className="rounded-xl bg-orange-50 px-3 py-2 text-xs font-bold text-orange-900">
+                                    {weakCount} need review
+                                  </div>
+                                </div>
+                              )}
+
+                              {attempt.criteriaResults.length > 0 && (
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {attempt.criteriaResults.slice(0, 4).map((criteria) => (
+                                    <span
+                                      key={criteria.id}
+                                      className={[
+                                        "rounded-full px-3 py-1 text-[11px] font-semibold",
+                                        criteria.status === "MET"
+                                          ? "bg-emerald-50 text-emerald-800"
+                                          : criteria.status === "PARTIAL"
+                                            ? "bg-amber-50 text-amber-800"
+                                            : "bg-red-50 text-red-700",
+                                      ].join(" ")}
+                                      title={criteria.description}
+                                    >
+                                      {criteria.description}
+                                    </span>
+                                  ))}
+                                  {attempt.criteriaResults.length > 4 && (
+                                    <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-stone-400 ring-1 ring-stone-200">
+                                      +{attempt.criteriaResults.length - 4} more
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </section>
               </div>
             )}
 
@@ -312,6 +475,95 @@ export default function ReadinessQuizPage() {
                   )}
                 </div>
               </div>
+            )}
+
+            {quiz && (
+              <section className="mt-6 rounded-2xl border border-stone-200/70 bg-white p-5">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="text-base font-bold text-stone-900">
+                      Quiz history
+                    </h3>
+                    <p className="text-xs text-stone-400">
+                      Your previous attempts and scores for this session.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-stone-50 px-3 py-1 text-xs font-bold text-stone-500">
+                    {quizHistory.length} attempts
+                  </span>
+                </div>
+
+                {historyError && (
+                  <p className="mt-4 text-xs font-semibold text-red-500">
+                    {historyError}
+                  </p>
+                )}
+
+                {quizHistory.length === 0 && !historyError ? (
+                  <div className="mt-4 rounded-xl bg-stone-50 px-4 py-5 text-sm font-medium text-stone-500">
+                    No quiz attempts have been recorded yet.
+                  </div>
+                ) : (
+                  <div className="mt-4 max-h-[220px] overflow-y-auto pr-1">
+                    <div className="space-y-3">
+                      {quizHistory.map((attempt) => {
+                        const isSubmitted = attempt.criteriaResults.length > 0;
+                        const metCount = attempt.criteriaResults.filter(
+                          (criteria) => criteria.status === "MET",
+                        ).length;
+                        const weakCount = attempt.criteriaResults.filter(
+                          (criteria) => criteria.status !== "MET",
+                        ).length;
+
+                        return (
+                          <div
+                            key={attempt.quizId}
+                            className="rounded-2xl border border-stone-200 bg-stone-50/70 p-4"
+                          >
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-[#d84315] ring-1 ring-orange-100">
+                                    {attempt.phase === "BEFORE" ? "Before class" : "After class"}
+                                  </span>
+                                  {!isSubmitted && (
+                                    <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-stone-400 ring-1 ring-stone-200">
+                                      Not submitted
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-stone-400">
+                                  <Clock3 size={13} />
+                                  {formatQuizDate(attempt.takenAt)}
+                                </p>
+                              </div>
+                              <div className="text-left sm:text-right">
+                                <p className="text-2xl font-bold text-stone-950">
+                                  {isSubmitted ? `${Math.round(attempt.totalScore)}%` : "-"}
+                                </p>
+                                <p className="text-xs font-semibold capitalize text-stone-500">
+                                  {isSubmitted ? formatReadiness(attempt.readiness) : "waiting for answers"}
+                                </p>
+                              </div>
+                            </div>
+
+                            {isSubmitted && (
+                              <div className="mt-4 grid grid-cols-2 gap-2">
+                                <div className="rounded-xl bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800">
+                                  {metCount} criteria met
+                                </div>
+                                <div className="rounded-xl bg-orange-50 px-3 py-2 text-xs font-bold text-orange-900">
+                                  {weakCount} need review
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </section>
             )}
           </div>
         </div>

@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { ensureActiveSession } from "@/lib/chat"
 import { prisma } from "@/lib/prisma"
 
-// GET /api/v1/chat/history/[sessionId] — get the student's current-phase history
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> }
@@ -10,14 +8,17 @@ export async function GET(
   try {
     const studentId = request.headers.get("x-user-id")!
     const { sessionId } = await params
-    const sessionResult = await ensureActiveSession(sessionId)
+    const session = await prisma.classSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, phase: true }
+    })
 
-    if (!sessionResult.ok) {
-      return NextResponse.json({ error: sessionResult.error }, { status: sessionResult.status })
+    if (!session) {
+      return NextResponse.json({ error: "Session not found" }, { status: 404 })
     }
 
     const conversation = await prisma.conversation.findFirst({
-      where: { studentId, sessionId, phase: sessionResult.session.phase },
+      where: { studentId, sessionId, phase: session.phase },
       include: {
         messages: {
           select: { id: true, role: true, content: true, createdAt: true },
@@ -60,7 +61,7 @@ export async function GET(
     return NextResponse.json(
       {
         conversationId: conversation?.id ?? null,
-        phase: sessionResult.session.phase,
+        phase: session.phase,
         messages: messages.map((message) => ({
           ...message,
           imageUrl: imageUrlByMessageId.get(message.id) ?? null,

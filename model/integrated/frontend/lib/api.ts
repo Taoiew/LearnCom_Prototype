@@ -150,6 +150,42 @@ export interface StudentProgressViewModel {
     percentage: number;
     color: string;
   }>;
+  sessionInsights: StudentSessionInsight[];
+}
+
+export interface StudentSessionInsight {
+  id: string;
+  weekTitle: string;
+  status: StudentSession["status"];
+  readiness: number;
+  quizAttempts: number;
+  chatQuestions: number;
+  latestQuizResult: string;
+  strengths: string[];
+  weaknesses: string[];
+  suggestedFocus: string[];
+  topChatTopics: string[];
+  references: Array<{
+    materialId: string | null;
+    fileName: string;
+    pageNumber: number | null;
+  }>;
+}
+
+export interface StudentQuizHistoryAttempt {
+  quizId: string;
+  phase: QuizPhase;
+  totalScore: number;
+  readiness: "READY" | "PARTIAL" | "NOT_READY";
+  takenAt: string;
+  criteriaResults: Array<{
+    id: string;
+    criteriaId: string;
+    description: string;
+    goal: string;
+    status: "MET" | "PARTIAL" | "NOT_MET";
+    evidence: string;
+  }>;
 }
 
 export interface StudentChatHistoryMessage {
@@ -739,36 +775,203 @@ export async function getStudentMaterialsViewModel(
   return { subjectCode, groups };
 }
 
+function dedupe(values: string[], limit = 4): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+
+  for (const value of values) {
+    const clean = value.replace(/\s+/g, " ").trim();
+    if (!clean || seen.has(clean.toLowerCase())) continue;
+    seen.add(clean.toLowerCase());
+    output.push(clean);
+    if (output.length >= limit) break;
+  }
+
+  return output;
+}
+
+function extractProgressTopics(messages: StudentChatHistoryMessage[]): string[] {
+  const stopWords = new Set([
+    "about",
+    "after",
+    "again",
+    "also",
+    "before",
+    "class",
+    "course",
+    "does",
+    "from",
+    "have",
+    "help",
+    "into",
+    "material",
+    "more",
+    "need",
+    "page",
+    "question",
+    "session",
+    "slide",
+    "that",
+    "their",
+    "there",
+    "this",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+    "would",
+  ]);
+  const counts = new Map<string, number>();
+  const studentMessages = messages.filter((message) => message.role === "STUDENT");
+
+  for (const message of studentMessages) {
+    const terms = message.content
+      .toLowerCase()
+      .match(/[a-z][a-z0-9-]{2,}/g) ?? [];
+
+    for (const term of terms) {
+      if (stopWords.has(term)) continue;
+      counts.set(term, (counts.get(term) ?? 0) + 1);
+    }
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 5)
+    .map(([term]) => term);
+}
+
+function buildSessionInsight(
+  session: StudentSession,
+  quizAttempts: StudentQuizHistoryAttempt[],
+  chatHistory: StudentChatHistory | null,
+): StudentSessionInsight {
+  const latestQuiz = quizAttempts[0];
+  const latestCriteria = latestQuiz?.criteriaResults ?? [];
+  const studentMessages = chatHistory?.messages.filter((message) => message.role === "STUDENT") ?? [];
+  const agentMessages = chatHistory?.messages.filter((message) => message.role === "AGENT") ?? [];
+  const references = dedupe(
+    agentMessages.flatMap((message) =>
+      (message.references ?? [])
+        .filter((reference) => reference.sourceType === "MATERIAL")
+        .map((reference) =>
+          `${reference.materialId ?? ""}|${reference.materialFileName ?? "Material"}|${reference.pageNumber ?? ""}`,
+        ),
+    ),
+    5,
+  ).map((key) => {
+    const [materialId, fileName, pageNumber] = key.split("|");
+    return {
+      materialId: materialId || null,
+      fileName: fileName || "Material",
+      pageNumber: pageNumber ? Number(pageNumber) : null,
+    };
+  });
+  const strongCriteria = latestCriteria
+    .filter((result) => result.status === "MET")
+    .map((result) => result.description);
+  const weakCriteria = latestCriteria
+    .filter((result) => result.status !== "MET")
+    .map((result) => result.description);
+  const topChatTopics = extractProgressTopics(studentMessages);
+  const readiness = latestQuiz ? Math.round(latestQuiz.totalScore) : session.status === "Completed" ? 100 : 0;
+  const suggestedFocus = dedupe([
+    ...weakCriteria,
+    ...topChatTopics.map((topic) => `Review questions about ${topic}`),
+    references[0] ? `Revisit ${references[0].fileName}${references[0].pageNumber ? ` page ${references[0].pageNumber}` : ""}` : "",
+  ], 4);
+
+  return {
+    id: session.id,
+    weekTitle: `${session.week} - ${session.title}`,
+    status: session.status,
+    readiness,
+    quizAttempts: quizAttempts.length,
+    chatQuestions: studentMessages.length,
+    latestQuizResult: latestQuiz
+      ? latestQuiz.readiness.replace("_", " ").toLowerCase()
+      : "No quiz submitted",
+    strengths: dedupe(
+      strongCriteria.length > 0
+        ? strongCriteria
+        : readiness >= 80
+          ? ["Good overall readiness in this session"]
+          : [],
+      4,
+    ),
+    weaknesses: dedupe(
+      weakCriteria.length > 0
+        ? weakCriteria
+        : readiness > 0 && readiness < 80
+          ? ["Needs more evidence in quiz answers"]
+          : topChatTopics.length > 0
+            ? topChatTopics.map((topic) => `Asked about ${topic}`)
+            : [],
+      4,
+    ),
+    suggestedFocus,
+    topChatTopics,
+    references,
+  };
+}
+
+export async function getStudentQuizHistory(
+  sessionId: string,
+): Promise<StudentQuizHistoryAttempt[]> {
+  const body = await apiFetch<{ quizzes: StudentQuizHistoryAttempt[] }>(
+    `/api/v1/quiz/history/${sessionId}`,
+  );
+  return body.quizzes;
+}
+
 export async function getStudentProgressViewModel(
   subjectCode = "",
 ): Promise<StudentProgressViewModel> {
   const dashboard = await getStudentDashboardViewModel();
   const sessions = dashboard.sessionsBySubject[subjectCode] ?? [];
   const completedCount = sessions.filter((session) => session.status === "Completed").length;
+  const sessionInsights = await Promise.all(
+    sessions.map(async (session) => {
+      const [quizAttempts, chatHistory] = await Promise.all([
+        getStudentQuizHistory(session.id).catch(() => []),
+        getStudentChatHistory(session.id).catch(() => null),
+      ]);
+      return buildSessionInsight(session, quizAttempts, chatHistory);
+    }),
+  );
+  const scoredInsights = sessionInsights.filter((insight) => insight.quizAttempts > 0);
+  const averageReadiness = scoredInsights.length
+    ? Math.round(scoredInsights.reduce((sum, insight) => sum + insight.readiness, 0) / scoredInsights.length)
+    : 0;
+  const strongSessions = sessionInsights.filter((insight) => insight.strengths.length > 0).length;
+  const focusItems = sessionInsights.reduce((sum, insight) => sum + insight.weaknesses.length, 0);
 
   return {
     subjectCode,
     stats: [
-      { label: "Avg readiness", value: "0%", subtext: "from real reports" },
+      { label: "Avg readiness", value: `${averageReadiness}%`, subtext: "from submitted quizzes" },
       {
         label: "Sessions done",
         value: `${completedCount} / ${sessions.length}`,
         subtext: "this semester",
       },
-      { label: "Active sessions", value: `${sessions.filter((s) => s.status === "Active").length}`, subtext: "available now" },
+      { label: "Strong sessions", value: `${strongSessions}`, subtext: "rubric criteria met" },
+      { label: "Focus items", value: `${focusItems}`, subtext: "from quizzes and chat" },
     ],
     progress: sessions.map((session) => ({
       id: session.id,
       weekTitle: `${session.week} - ${session.title}`,
       status: session.status,
-      percentage: session.status === "Completed" ? 100 : 0,
+      percentage: sessionInsights.find((insight) => insight.id === session.id)?.readiness ?? 0,
       color:
-        session.status === "Completed"
+        (sessionInsights.find((insight) => insight.id === session.id)?.readiness ?? 0) >= 80
           ? "bg-emerald-500"
-          : session.status === "Active"
+          : (sessionInsights.find((insight) => insight.id === session.id)?.readiness ?? 0) >= 50
             ? "bg-[#e65100]"
             : "bg-stone-200",
     })),
+    sessionInsights,
   };
 }
 
