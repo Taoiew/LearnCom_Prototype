@@ -96,6 +96,33 @@ def test_uploading_same_attachment_reuses_existing_verified_kb_after_restart(
     )
 
 
+def test_upload_recreates_missing_status_directory(tmp_path: Path) -> None:
+    base_dir = tmp_path / "chat_attachments"
+    service = ConversationAttachmentService(
+        base_dir=base_dir,
+        conversation_store=ConversationKnowledgeStore(),
+    )
+
+    status_dir = base_dir / "status"
+    for status_file in status_dir.glob("*.json"):
+        status_file.unlink()
+    status_dir.rmdir()
+
+    response = service.upload_attachment(
+        student_id="student-a",
+        conversation_id="conversation-a",
+        course_id="course-001",
+        class_session_id="session-001",
+        filename="notes.png",
+        content_type="image/png",
+        content=b"\x89PNG\r\n\x1a\nfake-png-content",
+        auto_process=False,
+    )
+
+    assert response.processing_status == "stored"
+    assert (status_dir / f"{response.attachment_id}.json").is_file()
+
+
 def test_chat_with_attachment_api_returns_attachment_and_chat(tmp_path: Path) -> None:
     app = create_app(
         pipeline=FakePipeline(),
@@ -127,6 +154,98 @@ def test_chat_with_attachment_api_returns_attachment_and_chat(tmp_path: Path) ->
     body = response.json()
     assert body["attachment"]["student_id"] == "student-b"
     assert body["chat"]["answer"] == "attachment answer"
+
+
+def test_chat_with_attachment_api_reuses_ready_attachment_without_reprocessing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = ConversationAttachmentService(
+        base_dir=tmp_path / "chat_attachments",
+        conversation_store=ConversationKnowledgeStore(),
+    )
+    content = b"\x89PNG\r\n\x1a\nfake-png-content"
+    service.upload_attachment(
+        student_id="student-b",
+        conversation_id="conversation-b",
+        course_id="course-001",
+        class_session_id="session-001",
+        filename="sample.png",
+        content_type="image/png",
+        content=content,
+    )
+
+    def fail_process(*args, **kwargs):
+        raise AssertionError("Ready attachments should not be processed again")
+
+    monkeypatch.setattr(service, "process_attachment", fail_process)
+    app = create_app(
+        pipeline=FakePipeline(),
+        conversation_attachment_service=service,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/chat/with-attachment",
+        data={
+            "request_json": ChatRequest(
+                student_id="student-b",
+                course_id="course-001",
+                class_session_id="session-001",
+                phase=LearningPhase.DURING_CLASS,
+                question="What is in the attachment?",
+                conversation_id="conversation-b",
+            ).model_dump_json(),
+            "course_relevance_score": "0.90",
+            "unsafe": "false",
+        },
+        files={"file": ("sample.png", content, "image/png")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["chat"]["answer"] == "attachment answer"
+
+
+def test_chat_with_attachment_api_reports_processing_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = ConversationAttachmentService(
+        base_dir=tmp_path / "chat_attachments",
+        conversation_store=ConversationKnowledgeStore(),
+    )
+
+    def fail_process(*args, **kwargs):
+        raise Exception("synthetic attachment failure")
+
+    monkeypatch.setattr(service, "process_attachment", fail_process)
+    app = create_app(
+        pipeline=FakePipeline(),
+        conversation_attachment_service=service,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/chat/with-attachment",
+        data={
+            "request_json": ChatRequest(
+                student_id="student-b",
+                course_id="course-001",
+                class_session_id="session-001",
+                phase=LearningPhase.DURING_CLASS,
+                question="What is in the attachment?",
+                conversation_id="conversation-b",
+            ).model_dump_json(),
+            "course_relevance_score": "0.90",
+            "unsafe": "false",
+        },
+        files={"file": ("sample.png", b"\x89PNG\r\n\x1a\nfake-png-content", "image/png")},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == (
+        "Attachment processing failed: synthetic attachment failure"
+    )
 
 
 def test_process_chat_attachment_provider_failure_returns_502(

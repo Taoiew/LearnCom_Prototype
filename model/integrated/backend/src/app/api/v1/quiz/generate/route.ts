@@ -108,10 +108,10 @@ export async function POST(request: NextRequest) {
       const defaultCriterion = await prisma.sessionCriteria.create({
         data: {
           sessionId,
-          description: `Explain the key ideas from ${sessionResult.session.title}`,
+          description: `Explain the main concept from ${sessionResult.session.title} using specific evidence from the uploaded materials`,
           goal: sessionResult.session.materials.length
-            ? `Use evidence from ${sessionResult.session.materials.map((material) => material.fileName).join(", ")}`
-            : `Show readiness for ${sessionResult.session.title}`,
+            ? `Identify the session's main idea, cite concrete material evidence from ${sessionResult.session.materials.map((material) => material.fileName).join(", ")}, and apply it to a realistic example.`
+            : `Show readiness for ${sessionResult.session.title} by explaining the main concept and giving a realistic example.`,
           order: 0
         }
       })

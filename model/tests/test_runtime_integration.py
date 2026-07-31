@@ -53,6 +53,27 @@ class FakeLocalLLMClient:
         }
 
 
+class FakeExternalLLMClient:
+    def __init__(self) -> None:
+        self.call_count = 0
+        self.user_prompt = ""
+
+    def chat_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.0,
+    ) -> dict[str, Any]:
+        self.call_count += 1
+        self.user_prompt = user_prompt
+
+        return {
+            "answer": "Momentum uses prior updates to smooth optimization.",
+            "confidence": 0.82,
+            "learning_signals": [],
+        }
+
+
 def create_verified_kb(
     tmp_path: Path,
 ) -> Path:
@@ -165,6 +186,19 @@ def test_runtime_defaults_to_demo_mode():
     assert config.verified_kb_path is None
     assert config.top_k == 3
     assert config.max_context_chars == 12000
+    assert config.external_answer_agent_mode == "none"
+
+
+def test_runtime_auto_enables_gemini_chat_fallback_when_key_exists():
+    config = ModelRuntimeConfig.from_environment(
+        {
+            "GEMINI_API_KEY": "test-key",
+            "GEMINI_TEXT_MODEL": "gemini-test-model",
+        }
+    )
+
+    assert config.external_answer_agent_mode == "gemini"
+    assert config.gemini_text_model == "gemini-test-model"
 
 
 def test_runtime_rejects_unknown_mode():
@@ -237,6 +271,41 @@ def test_demo_pipeline_still_answers():
     assert response.scope is ScopeDecision.IN_MATERIAL
     assert response.confidence == 0.90
     assert len(response.citations) == 1
+
+
+def test_demo_pipeline_uses_configured_external_fallback():
+    fake_external = FakeExternalLLMClient()
+    config = ModelRuntimeConfig.from_environment(
+        {
+            "MODEL_RUNTIME_MODE": "demo",
+            "GEMINI_API_KEY": "test-key",
+            "GEMINI_TEXT_MODEL": "gemini-test-model",
+        }
+    )
+
+    pipeline = build_pipeline(
+        config,
+        external_llm_client=fake_external,
+    )
+
+    response = pipeline.run(
+        request=ChatRequest(
+            student_id="student-001",
+            course_id="course-001",
+            class_session_id="session-001",
+            phase=LearningPhase.DURING_CLASS,
+            question="What is momentum optimization?",
+        ),
+        course_relevance_score=0.90,
+    )
+
+    assert fake_external.call_count == 1
+    assert response.used_external_agent is True
+    assert (
+        response.scope
+        is ScopeDecision.COURSE_RELATED_OUTSIDE_MATERIAL
+    )
+    assert response.confidence == 0.82
 
 
 def test_verified_pipeline_uses_local_llm(

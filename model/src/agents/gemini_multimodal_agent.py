@@ -80,9 +80,9 @@ class GeminiMultimodalConfig:
     model: str
     api_key: str
     timeout_seconds: float = 90.0
-    max_retries: int = 3
+    max_retries: int = 1
     temperature: float = 0.1
-    max_output_tokens: int = 8192
+    max_output_tokens: int = 2048
     max_image_bytes: int = 10 * 1024 * 1024
 
     def __post_init__(self) -> None:
@@ -137,7 +137,7 @@ class GeminiMultimodalConfig:
             ),
             max_retries=cls._read_int(
                 "GEMINI_VISION_MAX_RETRIES",
-                3,
+                1,
             ),
             temperature=cls._read_float(
                 "GEMINI_VISION_TEMPERATURE",
@@ -145,7 +145,7 @@ class GeminiMultimodalConfig:
             ),
             max_output_tokens=cls._read_int(
                 "GEMINI_VISION_MAX_OUTPUT_TOKENS",
-                8192,
+                2048,
             ),
         )
 
@@ -325,21 +325,21 @@ class GeminiMultimodalClient:
                 )
 
             if response.status_code == 429:
-                if attempt_index >= attempts - 1:
-                    provider_message = self._provider_error_message(
-                        response,
-                        fallback=(
-                            "Gemini Vision rate limit exceeded"
-                        ),
-                    )
-                    if _is_billing_credit_error(provider_message):
-                        raise GeminiMultimodalProviderError(
-                            provider_message.replace(
-                                "Gemini Vision rate limit exceeded",
-                                "Gemini Vision billing credits are depleted",
-                                1,
-                            )
+                provider_message = self._provider_error_message(
+                    response,
+                    fallback=(
+                        "Gemini Vision rate limit exceeded"
+                    ),
+                )
+                if _is_billing_credit_error(provider_message):
+                    raise GeminiMultimodalProviderError(
+                        provider_message.replace(
+                            "Gemini Vision rate limit exceeded",
+                            "Gemini Vision billing credits are depleted",
+                            1,
                         )
+                    )
+                if attempt_index >= attempts - 1:
                     raise GeminiMultimodalRateLimitError(
                         provider_message
                     )

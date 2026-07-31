@@ -7,10 +7,12 @@ from typing import Mapping
 from schemas.model_contract import LearningPhase
 from src.agents.answer_agent import (
     AnswerDraft,
+    ExternalCourseAnswerAgent,
     JSONChatClient,
     RAGAnswerAgent,
 )
 from src.agents.llm_client import (
+    GeminiJSONClient,
     LLMConfig,
     OpenAICompatibleClient,
 )
@@ -47,6 +49,14 @@ class ModelRuntimeConfig:
     local_llm_api_key: str
     local_llm_model: str
     llm_timeout_seconds: float
+
+    external_answer_agent_mode: str
+    external_llm_base_url: str
+    external_llm_api_key: str
+    external_llm_model: str
+    gemini_api_base_url: str
+    gemini_api_key: str
+    gemini_text_model: str
 
     top_k: int
     material_threshold: float
@@ -113,6 +123,83 @@ class ModelRuntimeConfig:
             default=60.0,
             minimum_exclusive=0.0,
         )
+
+        external_llm_base_url = env.get(
+            "EXTERNAL_LLM_BASE_URL",
+            "",
+        ).strip()
+
+        external_llm_api_key = env.get(
+            "EXTERNAL_LLM_API_KEY",
+            "",
+        ).strip()
+
+        external_llm_model = env.get(
+            "EXTERNAL_LLM_MODEL",
+            "",
+        ).strip()
+
+        gemini_api_base_url = env.get(
+            "GEMINI_API_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta",
+        ).strip()
+
+        gemini_api_key = env.get(
+            "GEMINI_API_KEY",
+            "",
+        ).strip()
+
+        gemini_text_model = env.get(
+            "GEMINI_TEXT_MODEL",
+            env.get("GEMINI_VISION_MODEL", "gemini-3.6-flash"),
+        ).strip()
+
+        external_answer_agent_mode = env.get(
+            "CHAT_EXTERNAL_ANSWER_AGENT",
+            "",
+        ).strip().lower()
+
+        if not external_answer_agent_mode:
+            if gemini_api_key:
+                external_answer_agent_mode = "gemini"
+            elif external_llm_base_url and external_llm_model:
+                external_answer_agent_mode = "external"
+            else:
+                external_answer_agent_mode = "none"
+
+        if external_answer_agent_mode not in {
+            "none",
+            "external",
+            "gemini",
+        }:
+            raise RuntimeConfigurationError(
+                "CHAT_EXTERNAL_ANSWER_AGENT must be "
+                "'none', 'external', or 'gemini'"
+            )
+
+        if external_answer_agent_mode == "gemini":
+            if not gemini_api_key:
+                raise RuntimeConfigurationError(
+                    "GEMINI_API_KEY is required when "
+                    "CHAT_EXTERNAL_ANSWER_AGENT=gemini"
+                )
+            if not gemini_text_model:
+                raise RuntimeConfigurationError(
+                    "GEMINI_TEXT_MODEL is required when "
+                    "CHAT_EXTERNAL_ANSWER_AGENT=gemini"
+                )
+
+        if external_answer_agent_mode == "external":
+            if not external_llm_base_url:
+                raise RuntimeConfigurationError(
+                    "EXTERNAL_LLM_BASE_URL is required when "
+                    "CHAT_EXTERNAL_ANSWER_AGENT=external"
+                )
+            if not external_llm_model:
+                raise RuntimeConfigurationError(
+                    "EXTERNAL_LLM_MODEL is required when "
+                    "CHAT_EXTERNAL_ANSWER_AGENT=external"
+                )
 
         top_k = cls._read_int(
             env=env,
@@ -191,6 +278,13 @@ class ModelRuntimeConfig:
             local_llm_api_key=local_llm_api_key,
             local_llm_model=local_llm_model,
             llm_timeout_seconds=llm_timeout_seconds,
+            external_answer_agent_mode=external_answer_agent_mode,
+            external_llm_base_url=external_llm_base_url,
+            external_llm_api_key=external_llm_api_key,
+            external_llm_model=external_llm_model,
+            gemini_api_base_url=gemini_api_base_url,
+            gemini_api_key=gemini_api_key,
+            gemini_text_model=gemini_text_model,
             top_k=top_k,
             material_threshold=material_threshold,
             course_threshold=course_threshold,
@@ -539,6 +633,7 @@ class ExtractiveAnswerAgent:
 def build_pipeline(
     config: ModelRuntimeConfig,
     llm_client: JSONChatClient | None = None,
+    external_llm_client: JSONChatClient | None = None,
     course_store: CourseKnowledgeStore | None = None,
     conversation_store: (
         ConversationKnowledgeStore | None
@@ -577,6 +672,10 @@ def build_pipeline(
             ),
             scope_router=scope_router,
             material_answer_agent=ExtractiveAnswerAgent(),
+            external_answer_agent=_build_external_answer_agent(
+                config=config,
+                external_llm_client=external_llm_client,
+            ),
             top_k=config.top_k,
         )
 
@@ -600,6 +699,10 @@ def build_pipeline(
             ),
             scope_router=scope_router,
             material_answer_agent=DemoAnswerAgent(),
+            external_answer_agent=_build_external_answer_agent(
+                config=config,
+                external_llm_client=external_llm_client,
+            ),
             top_k=config.top_k,
         )
 
@@ -660,13 +763,61 @@ def build_pipeline(
         retriever=retriever,
         scope_router=scope_router,
         material_answer_agent=answer_agent,
+        external_answer_agent=_build_external_answer_agent(
+            config=config,
+            external_llm_client=external_llm_client,
+        ),
         top_k=config.top_k,
+    )
+
+
+def _build_external_answer_agent(
+    *,
+    config: ModelRuntimeConfig,
+    external_llm_client: JSONChatClient | None = None,
+) -> ExternalCourseAnswerAgent | None:
+    if config.external_answer_agent_mode == "none":
+        return None
+
+    resolved_client = external_llm_client
+
+    if resolved_client is None:
+        if config.external_answer_agent_mode == "gemini":
+            resolved_client = GeminiJSONClient(
+                LLMConfig(
+                    base_url=config.gemini_api_base_url,
+                    model=config.gemini_text_model,
+                    api_key=config.gemini_api_key,
+                    timeout_seconds=(
+                        config.llm_timeout_seconds
+                    ),
+                )
+            )
+        else:
+            resolved_client = OpenAICompatibleClient(
+                LLMConfig(
+                    base_url=config.external_llm_base_url,
+                    model=config.external_llm_model,
+                    api_key=config.external_llm_api_key,
+                    timeout_seconds=(
+                        config.llm_timeout_seconds
+                    ),
+                )
+            )
+
+    return ExternalCourseAnswerAgent(
+        llm_client=resolved_client,
+        max_context_chars=min(
+            config.max_context_chars,
+            6000,
+        ),
     )
 
 
 def build_pipeline_from_environment(
     environment: Mapping[str, str] | None = None,
     llm_client: JSONChatClient | None = None,
+    external_llm_client: JSONChatClient | None = None,
     course_store: CourseKnowledgeStore | None = None,
     conversation_store: (
         ConversationKnowledgeStore | None
@@ -679,6 +830,7 @@ def build_pipeline_from_environment(
     return build_pipeline(
         config=config,
         llm_client=llm_client,
+        external_llm_client=external_llm_client,
         course_store=course_store,
         conversation_store=conversation_store,
     )

@@ -51,7 +51,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "An answer is required for every question" }, { status: 400 })
     }
 
-    const scoredQuestions = await Promise.all(quiz.questions.map(async (question) => {
+    const scoredQuestions = []
+    for (const question of quiz.questions) {
       const studentAnswer = answerMap.get(question.id)!
       const scored = await scoreQuizAnswer({
         questionText: question.questionText,
@@ -60,8 +61,8 @@ export async function POST(request: NextRequest) {
         language,
         phase: quiz.phase === "AFTER" ? "AFTER" : "BEFORE"
       })
-      return { question, studentAnswer, ...scored }
-    }))
+      scoredQuestions.push({ question, studentAnswer, ...scored })
+    }
 
     const totalScore = scoredQuestions.reduce((sum, question) => sum + question.score, 0) / scoredQuestions.length
     const readiness = getReadiness(totalScore)

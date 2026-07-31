@@ -232,6 +232,10 @@ class ConversationAttachmentService:
         record = self._get_record_or_raise(attachment_id)
         return self._to_status_response(record)
 
+    def get_process_response(self, attachment_id: str) -> ChatAttachmentProcessResponse:
+        record = self._get_record_or_raise(attachment_id)
+        return self._to_process_response(record)
+
     def remove_attachment(self, attachment_id: str) -> bool:
         with self._lock:
             record = self._records.get(attachment_id)
@@ -325,6 +329,7 @@ class ConversationAttachmentService:
         return f"attachment-{digest[:24]}"
 
     def _persist_status(self, record: AttachmentRecord) -> None:
+        self._status_dir.mkdir(parents=True, exist_ok=True)
         status_path = self._status_dir / f"{record.attachment_id}.json"
         payload = {
             "attachment_id": record.attachment_id,
@@ -357,6 +362,7 @@ class ConversationAttachmentService:
             shutil.rmtree(record.storage_dir, ignore_errors=True)
 
     def _remove_status_file(self, attachment_id: str) -> None:
+        self._status_dir.mkdir(parents=True, exist_ok=True)
         status_path = self._status_dir / f"{attachment_id}.json"
         if status_path.exists():
             status_path.unlink()

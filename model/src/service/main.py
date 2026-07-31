@@ -1,4 +1,8 @@
-﻿from src.retrieval.conversation_knowledge_store import (
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+from src.retrieval.conversation_knowledge_store import (
     ConversationKnowledgeStore,
 )
 from src.retrieval.course_knowledge_store import (
@@ -10,6 +14,10 @@ from src.service.conversation_attachment_service import (
 )
 from src.service.runtime import (
     build_pipeline_from_environment,
+)
+
+load_dotenv(
+    Path(__file__).resolve().parents[2] / ".env"
 )
 
 

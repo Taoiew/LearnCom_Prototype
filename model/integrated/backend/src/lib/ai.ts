@@ -44,6 +44,84 @@ type RawAIReference = {
   provider?: string | null
 }
 
+const COURSE_RELEVANCE_STOPWORDS = new Set([
+  "what",
+  "this",
+  "that",
+  "about",
+  "with",
+  "from",
+  "using",
+  "explain",
+  "describe",
+  "session",
+  "material",
+  "course",
+  "class",
+  "please",
+])
+
+const COURSE_KEYWORDS = [
+  "aws",
+  "cloud",
+  "ec2",
+  "iam",
+  "lambda",
+  "vpc",
+  "database",
+  "storage",
+  "network",
+  "security",
+  "compute",
+]
+
+const extractRelevanceTerms = (value: string) => (
+  value
+    .toLowerCase()
+    .normalize("NFKC")
+    .match(/[a-z0-9]{3,}|[\u0e00-\u0e7f]{2,}/g) ?? []
+).filter((term) => !COURSE_RELEVANCE_STOPWORDS.has(term))
+
+const estimateCourseRelevanceScore = (payload: {
+  studentMessage: string
+  sessionCriteria: { description: string; goal: string }[]
+  teacherMaterial: string
+}) => {
+  const question = payload.studentMessage.toLowerCase().normalize("NFKC")
+  if (
+    /what\s+(is\s+)?(this\s+)?(session|course)\s+about/.test(question) ||
+    /(summary|summarize|overview|recap)\s+(of|for)?\s*(this\s+)?(session|course|class)/.test(question) ||
+    /(this\s+)?(session|course|class)\s+(summary|overview|recap)/.test(question) ||
+    /คาบนี้|วิชานี้|บทเรียนนี้|เนื้อหานี้|สรุปคาบ|สรุปบทเรียน|สรุปวิชา|ภาพรวมคาบ|ภาพรวมบทเรียน/.test(question)
+  ) {
+    return 0.85
+  }
+
+  const questionTerms = new Set(extractRelevanceTerms(payload.studentMessage))
+  const contextTerms = new Set(
+    extractRelevanceTerms([
+      payload.teacherMaterial,
+      ...payload.sessionCriteria.flatMap((criterion) => [
+        criterion.description,
+        criterion.goal,
+      ]),
+    ].join(" "))
+  )
+
+  const matchedTerms = [...questionTerms].filter((term) => contextTerms.has(term)).length
+  if (matchedTerms >= 2) {
+    return 0.9
+  }
+  if (matchedTerms === 1) {
+    return 0.75
+  }
+  if (COURSE_KEYWORDS.some((keyword) => question.includes(keyword))) {
+    return 0.7
+  }
+
+  return 0.35
+}
+
 export const callAIChat = async (payload: {
   phase: string
   language: string
@@ -76,7 +154,7 @@ export const callAIChat = async (payload: {
             question: payload.studentMessage,
             conversation_id: payload.sessionId ?? payload.classSessionId
           },
-          course_relevance_score: 0.9,
+          course_relevance_score: estimateCourseRelevanceScore(payload),
           unsafe: false
         })
       })
@@ -506,22 +584,40 @@ export const callAIQuizScoring = async (payload: {
 
 const parseGeminiJson = (value: string) => {
   const trimmed = value.trim()
-  try {
-    return JSON.parse(trimmed)
-  } catch {
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim()
-    if (fenced) {
-      return JSON.parse(fenced)
-    }
+  const candidates = [trimmed]
 
-    const firstBrace = trimmed.indexOf("{")
-    const lastBrace = trimmed.lastIndexOf("}")
-    if (firstBrace >= 0 && lastBrace > firstBrace) {
-      return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1))
-    }
-
-    throw new Error("Gemini did not return valid JSON")
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim()
+  if (fenced) {
+    candidates.push(fenced)
   }
+
+  const firstBrace = trimmed.indexOf("{")
+  const lastBrace = trimmed.lastIndexOf("}")
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1))
+  }
+
+  const firstBracket = trimmed.indexOf("[")
+  const lastBracket = trimmed.lastIndexOf("]")
+  if (firstBracket >= 0 && lastBracket > firstBracket) {
+    candidates.push(trimmed.slice(firstBracket, lastBracket + 1))
+  }
+
+  for (const candidate of candidates) {
+    const normalized = candidate
+      .replace(/^\s*json\s*/i, "")
+      .replace(/,\s*([}\]])/g, "$1")
+      .trim()
+
+    try {
+      const parsed = JSON.parse(normalized)
+      return Array.isArray(parsed) ? parsed[0] : parsed
+    } catch {
+      // Try the next candidate extracted from the same Gemini response.
+    }
+  }
+
+  throw new Error("Gemini did not return valid JSON")
 }
 
 export const callGeminiQuizScoring = async (payload: {
@@ -556,6 +652,8 @@ export const callGeminiQuizScoring = async (payload: {
     "0-49 = not met, missing core ideas or unsupported.",
     "50-79 = partially met, correct but incomplete or weakly evidenced.",
     "80-100 = met, accurate, specific, and supported by the material/rubric.",
+    "Use 0 only for blank answers, 'I don't know', refusals, or answers that are completely unrelated.",
+    "Give 10-49 for answers that mention a relevant course keyword but do not explain, support, or apply it.",
     payload.phase === "AFTER"
       ? "This is a post-class quiz. Require application, correction of misunderstandings, and clear evidence that the student now meets the criterion."
       : "This is a pre-class quiz. Measure readiness and identify gaps before class.",
@@ -578,7 +676,7 @@ export const callGeminiQuizScoring = async (payload: {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
         temperature: 0,
-        maxOutputTokens: 512,
+        maxOutputTokens: 1024,
         responseMimeType: "application/json",
       },
     }),
@@ -601,10 +699,35 @@ export const callGeminiQuizScoring = async (payload: {
     throw new Error("Gemini returned an empty quiz score")
   }
 
-  const parsed = parseGeminiJson(candidateText) as {
+  let parsed: {
     score?: unknown
     feedback?: unknown
     evidence?: unknown
+  }
+
+  try {
+    parsed = parseGeminiJson(candidateText) as {
+      score?: unknown
+      feedback?: unknown
+      evidence?: unknown
+    }
+  } catch (error) {
+    console.warn("Gemini quiz score JSON parse failed; using local fallback.", {
+      error,
+      preview: candidateText.slice(0, 300),
+    })
+    const fallback = await callAIQuizScoring({
+      questionText: payload.questionText,
+      correctConcept: payload.correctConcept,
+      studentAnswer: payload.studentAnswer,
+      language: payload.language,
+    })
+
+    return {
+      score: fallback.score,
+      feedback: fallback.feedback,
+      evidence: `Fallback local scoring used because Gemini returned invalid JSON. ${fallback.evidence}`,
+    }
   }
   const score = typeof parsed.score === "number"
     ? Math.max(0, Math.min(100, parsed.score))

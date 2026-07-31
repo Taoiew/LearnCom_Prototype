@@ -338,6 +338,50 @@ def test_retryable_status_codes_are_retried(
     assert calls == 2
 
 
+def test_billing_credit_429_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "src.agents.gemini_multimodal_agent.time.sleep",
+        lambda delay: None,
+    )
+    image_path = tmp_path / "page.png"
+    write_png(image_path)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            429,
+            json={
+                "error": {
+                    "message": "Your prepayment credits are depleted."
+                }
+            },
+        )
+
+    client = GeminiMultimodalClient(
+        config=create_config(max_retries=2),
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            base_url="https://generativelanguage.googleapis.com/v1beta/",
+        ),
+    )
+
+    with pytest.raises(
+        GeminiMultimodalProviderError,
+        match="prepayment credits are depleted",
+    ):
+        client.chat_json(
+            request=create_request(image_path),
+            system_prompt="Return JSON.",
+        )
+
+    assert calls == 1
+
+
 def test_400_is_not_retried(tmp_path: Path) -> None:
     image_path = tmp_path / "page.png"
     write_png(image_path)

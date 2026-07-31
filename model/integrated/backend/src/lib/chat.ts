@@ -133,6 +133,25 @@ const saveCache = async (
 const makeSummary = (messages: AIChatMessage[]) =>
   messages.map((message) => `${message.role}: ${message.content}`).join("\n").slice(-4000)
 
+const isSessionOverviewQuestion = (message: string) => {
+  const question = message.toLowerCase().normalize("NFKC")
+  return (
+    /what\s+(is\s+)?(this\s+)?(session|course)\s+about/.test(question) ||
+    /(summary|summarize|overview|recap)\s+(of|for)?\s*(this\s+)?(session|course|class)/.test(question) ||
+    /(this\s+)?(session|course|class)\s+(summary|overview|recap)/.test(question) ||
+    /คาบนี้|วิชานี้|บทเรียนนี้|เนื้อหานี้|สรุปคาบ|สรุปบทเรียน|สรุปวิชา|ภาพรวมคาบ|ภาพรวมบทเรียน/.test(question)
+  )
+}
+
+const hasProcessedMaterial = (session: ActiveSession) =>
+  session.materials.some((material) => material.isProcessed)
+
+const makeMissingMaterialAnswer = (session: ActiveSession) =>
+  [
+    `I cannot summarize ${session.title} yet because this session has no processed material in the knowledge base.`,
+    "Upload and publish at least one material file for this session, then ask again."
+  ].join(" ")
+
 const saveAnswerReferences = async ({
   aiResult,
   agentMessageId,
@@ -251,6 +270,36 @@ export const sendChatMessage = async ({
       content: message
     }
   })
+
+  if (!hasProcessedMaterial(session) && isSessionOverviewQuestion(message)) {
+    const response = makeMissingMaterialAnswer(session)
+    const agentMessage = await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        studentId,
+        role: "AGENT",
+        content: response
+      }
+    })
+
+    const recentMessages = [...cache.recentMessages, studentMessage, agentMessage].slice(-RECENT_MESSAGE_LIMIT)
+    await saveCache(studentId, sessionId, session.phase, {
+      recentMessages,
+      summary: cache.summary
+    })
+
+    return {
+      ok: true as const,
+      conversationId: conversation.id,
+      phase: session.phase,
+      language: language === "th" ? "th" as const : "en" as const,
+      response,
+      references: [],
+      flaggedCriteria: [],
+      studentMessageId: studentMessage.id,
+      session
+    }
+  }
 
   const aiResult = await callAIChat({
     phase: session.phase.toLowerCase(),

@@ -21,6 +21,14 @@ export type PersonalizationContext = {
   previousFeedback: string[]
 }
 
+const readQuizQuestionLimit = () => {
+  const parsed = Number.parseInt(process.env.QUIZ_MAX_QUESTIONS_PER_ATTEMPT ?? "3", 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 3
+  }
+  return Math.min(parsed, 10)
+}
+
 const cleanEvidence = (value: string) =>
   value
     .replace(/\n{3,}/g, "\n\n")
@@ -28,6 +36,30 @@ const cleanEvidence = (value: string) =>
     .replace(/^From the uploaded material, this session is about:\s*/i, "")
     .trim()
     .slice(0, 900)
+
+const makeReadableFocus = (description: string, sessionTitle: string) => {
+  const cleaned = description
+    .replace(/^explain\s+/i, "")
+    .replace(/^apply\s+/i, "")
+    .replace(/\.$/, "")
+    .trim()
+
+  if (!cleaned || /key ideas? from/i.test(cleaned)) {
+    return `the main concept from ${sessionTitle}`
+  }
+
+  return cleaned
+}
+
+const answerRequirements = (phase: QuizPhase) => [
+  "Strong answer requirements:",
+  "- State the main concept in your own words.",
+  "- Include at least one concrete detail from the material evidence.",
+  phase === "AFTER"
+    ? "- Apply the concept to a realistic case, decision, or example."
+    : "- Explain why the detail matters for class readiness.",
+  "- Avoid one-line topic labels without explanation.",
+].join("\n")
 
 export const generateQuizFromKbAndRubric = async ({
   session,
@@ -51,7 +83,7 @@ export const generateQuizFromKbAndRubric = async ({
     ...session.sessionCriteria.filter((criterion) =>
       phase !== "AFTER" || !personalization?.weakCriteriaIds.includes(criterion.id)
     ),
-  ]
+  ].slice(0, readQuizQuestionLimit())
   const recentQuestions = personalization?.recentStudentQuestions.slice(0, 5) ?? []
   const previousFeedback = personalization?.previousFeedback.slice(0, 5) ?? []
 
@@ -105,19 +137,20 @@ export const generateQuizFromKbAndRubric = async ({
             previousFeedback.length ? `Address these earlier gaps: ${previousFeedback.join(" | ")}` : "",
           ].filter(Boolean).join(" ")
         : ""
+      const focus = makeReadableFocus(criterion.description, session.title)
 
       return {
         criteriaId: criterion.id,
         questionText:
           phase === "AFTER"
             ? questionType === "SCENARIO"
-              ? `Post-class check: apply ${criterion.description} to a realistic case from this session.`
-              : `Post-class check: explain how you corrected or confirmed your understanding of ${criterion.goal}.`
+              ? `Post-class check: Apply ${focus} to a realistic case. Include one material detail and explain the connection.`
+              : `Post-class check: Explain ${focus} in your own words, then show how your understanding changed or became clearer.`
             : questionType === "SCENARIO"
-              ? `Apply this session material to a practical example: ${criterion.description}`
+              ? `Apply ${focus} to a practical example. Include one detail from the uploaded material.`
               : questionType === "REASONING"
-                ? `Explain the reasoning behind this rubric goal: ${criterion.goal}`
-                : `Using the session material, explain: ${criterion.description}`,
+                ? `Explain why ${focus} matters for this session. Use evidence from the material.`
+                : `Using the session material, explain ${focus}. Include one specific example or detail.`,
         questionType,
         options: null,
         correctConcept: [
@@ -126,6 +159,7 @@ export const generateQuizFromKbAndRubric = async ({
           `Goal: ${criterion.goal}`,
           personalizationHint ? `Student-specific context: ${personalizationHint}` : "",
           `Material evidence used for this question: ${sourceExcerpt}`,
+          answerRequirements(phase),
           phase === "AFTER"
             ? "Passing requires accurate application, not just repeating keywords."
             : ""
@@ -155,13 +189,28 @@ export const scoreQuizAnswer = async ({
   phase: QuizPhase
 }) => {
   if (phase === "AFTER") {
-    return callGeminiQuizScoring({
-      questionText,
-      correctConcept,
-      studentAnswer,
-      language,
-      phase,
-    })
+    try {
+      return await callGeminiQuizScoring({
+        questionText,
+        correctConcept,
+        studentAnswer,
+        language,
+        phase,
+      })
+    } catch (error) {
+      console.warn("Gemini quiz scoring failed; using local fallback.", error)
+      const fallback = await callAIQuizScoring({
+        questionText,
+        correctConcept,
+        studentAnswer,
+        language
+      })
+
+      return {
+        ...fallback,
+        evidence: `Fallback local scoring used because Gemini scoring failed. ${fallback.evidence}`
+      }
+    }
   }
 
   return callAIQuizScoring({

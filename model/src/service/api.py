@@ -358,14 +358,22 @@ def create_app(
                     )
                 )
 
-                processed = (
-                    attachment_service.process_attachment(
-                        attachment_id=(
-                            attachment.attachment_id
-                        ),
-                        agent=agent,
+                if (
+                    attachment.processing_status
+                    == AttachmentProcessingStatus.READY
+                ):
+                    processed = attachment_service.get_process_response(
+                        attachment.attachment_id
                     )
-                )
+                else:
+                    processed = (
+                        attachment_service.process_attachment(
+                            attachment_id=(
+                                attachment.attachment_id
+                            ),
+                            agent=agent,
+                        )
+                    )
 
             chat_response = pipeline.run(
                 request=request,
@@ -400,6 +408,11 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=str(exc),
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Attachment processing failed: {exc}",
             ) from exc
 
         finally:
@@ -474,6 +487,11 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Attachment processing failed: {exc}",
+            ) from exc
 
     @app.get(
         "/v1/chat/attachments/{attachment_id}/status",
@@ -838,6 +856,8 @@ def _chat_attachment_agent_context(
 ) -> AbstractContextManager[MultimodalAgent | None]:
     raw_mode = os.getenv("CHAT_ATTACHMENT_MULTIMODAL_AGENT")
     if raw_mode is None or not raw_mode.strip():
+        if os.getenv("GEMINI_API_KEY", "").strip():
+            return agent_context_factory("gemini")
         return nullcontext(None)
 
     mode = raw_mode.strip().lower()

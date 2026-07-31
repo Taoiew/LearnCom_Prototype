@@ -63,6 +63,7 @@ AI_SERVICE_URL=http://127.0.0.1:8000
 GEMINI_API_KEY=your-gemini-api-key
 GEMINI_API_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 GEMINI_TEXT_MODEL=gemini-3.6-flash
+QUIZ_MAX_QUESTIONS_PER_ATTEMPT=3
 QDRANT_URL=http://127.0.0.1:6333
 UPLOAD_PATH=uploads
 ```
@@ -136,21 +137,27 @@ LLM_TIMEOUT_SECONDS=60
 
 GEMINI_API_KEY=your-gemini-api-key
 GEMINI_API_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+GEMINI_TEXT_MODEL=gemini-3.6-flash
 GEMINI_VISION_MODEL=gemini-3.6-flash
 GEMINI_VISION_TIMEOUT_SECONDS=90
-GEMINI_VISION_MAX_RETRIES=3
+GEMINI_VISION_MAX_RETRIES=1
 GEMINI_VISION_TEMPERATURE=0.1
-GEMINI_VISION_MAX_OUTPUT_TOKENS=8192
+GEMINI_VISION_MAX_OUTPUT_TOKENS=2048
 
-MATERIAL_MULTIMODAL_AGENT=external
-CHAT_ATTACHMENT_MULTIMODAL_AGENT=external
+CHAT_EXTERNAL_ANSWER_AGENT=gemini
+MATERIAL_MULTIMODAL_AGENT=gemini
+CHAT_ATTACHMENT_MULTIMODAL_AGENT=gemini
 ```
 
 Notes:
 
-- `GEMINI_API_KEY` is required for Gemini-backed material processing, vision chat, quiz generation, and grading.
-- `MATERIAL_MULTIMODAL_AGENT=external` sends material processing to the configured external provider.
-- `CHAT_ATTACHMENT_MULTIMODAL_AGENT=external` sends image-based chat questions to the external provider.
+- `GEMINI_API_KEY` is required for Gemini-backed material processing, vision chat, outside-KB chat fallback, quiz generation, and grading.
+- `CHAT_EXTERNAL_ANSWER_AGENT=gemini` lets `/v1/chat` use Gemini when the KB is not enough but the question is still course-related.
+- `CHAT_ATTACHMENT_MULTIMODAL_AGENT=gemini` sends image-based chat questions to Gemini Vision. If this value is blank, the model service auto-selects Gemini when `GEMINI_API_KEY` is set.
+- Set `CHAT_EXTERNAL_ANSWER_AGENT=none` or `CHAT_ATTACHMENT_MULTIMODAL_AGENT=none` to disable paid external calls during local dry runs.
+- Keep `GEMINI_VISION_MAX_RETRIES=1` during testing. Higher values can multiply paid image requests when Gemini returns 429/5xx errors.
+- Keep `GEMINI_VISION_MAX_OUTPUT_TOKENS=2048` unless a page extraction is clearly being truncated.
+- `QUIZ_MAX_QUESTIONS_PER_ATTEMPT=3` caps quiz generation and grading calls. Use `1` for low-cost demos.
 
 ### Backend `.env`
 
@@ -171,6 +178,7 @@ AI_SERVICE_URL=http://127.0.0.1:8000
 GEMINI_API_KEY=your-gemini-api-key
 GEMINI_API_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 GEMINI_TEXT_MODEL=gemini-3.6-flash
+QUIZ_MAX_QUESTIONS_PER_ATTEMPT=3
 QDRANT_URL=http://127.0.0.1:6333
 UPLOAD_PATH=uploads
 ```
